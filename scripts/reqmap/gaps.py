@@ -23,7 +23,7 @@ import json
 import os
 import re
 
-from . import fm, graph, model
+from . import fm, fsl, graph, model
 from .model import ACTIVE, DECIDED, DROPPED, PROVISIONAL, SETTLED, _split3
 
 SEV = {"high": 0, "medium": 1, "low": 2}
@@ -53,36 +53,6 @@ def load_grids(proj):
             a, _, b = left.partition(" x ")
             g["skip"][(a.strip(), b.strip())] = reason.strip() or "（理由なし）"
         out.append(g)
-    return out
-
-
-def _directives(text):
-    d = {}
-    for k, v in re.findall(r"//\s*@(\w+)\s*:\s*(.+)", text):
-        d.setdefault(k, []).append(v.split("//")[0].strip())
-    return d
-
-
-def load_fsms(proj):
-    out = []
-    for p in sorted(glob.glob(os.path.join(proj.root, proj.cfg["models_dir"], "fsm", "*.fsl"))):
-        text = open(p, encoding="utf-8").read()
-        dv = _directives(text)
-        trans = []
-        for line in text.splitlines():
-            line = line.split("//")[0].strip()
-            m = re.match(r"^(\w+)\s+'([^']+)'\s*[-=~]+>\s*(\w+)\s*;?$", line)
-            if m:
-                trans.append((m.group(1), m.group(2), m.group(3)))
-        flat = lambda k: [x.strip() for v in dv.get(k, []) for x in v.split(",") if x.strip()]
-        out.append({"id": "fsm/" + os.path.splitext(os.path.basename(p))[0],
-                    "trans": trans, "events": flat("events") or sorted({t[1] for t in trans}),
-                    "terminal": flat("terminal"), "area": (flat("area") or [""])[0],
-                    "impossible": {tuple(x.strip().lower() for x in v.split(" x "))
-                                   for v in dv.get("impossible", [])},
-                    "depends_on": flat("depends_on"),
-                    "initial": trans[0][0] if trans else None,
-                    "file": os.path.relpath(p, proj.root)})
     return out
 
 
@@ -191,67 +161,6 @@ def grid_gaps(proj, grids):
     return findings, summary
 
 
-# ── FSM ─────────────────────────────────────────────────────
-def fsm_gaps(proj, fsms):
-    """状態×イベントの穴。**全マス総当たりにはしない。**
-
-    総当たりは無意味セル（未送信の注文を受け渡す、など）で埋まり、一度で信用を失う。
-    「そのイベントが定義済みの状態の**隣**」だけを問い、遠いセルは件数のみ記録する。
-    """
-    findings, summary = [], []
-    for m in fsms:
-        states = sorted({t[0] for t in m["trans"]} | {t[2] for t in m["trans"]})
-        defined = {(t[0], t[1]) for t in m["trans"]}
-        adj = {s: set() for s in states}
-        for a, e, b in m["trans"]:
-            adj[a].add(b); adj[b].add(a)
-        related = set(m["depends_on"]) | {
-            i for i, it in proj.items.items()
-            if any(str(c).startswith(m["id"]) for c in it["cells"])}
-        risk = proj.area_risk(m["area"])
-        sev = "high" if risk == "high" else "medium"
-        suppressed = 0
-        for e in m["events"]:
-            S = {s for (s, ev) in defined if ev == e}
-            if not S:
-                findings.append(_f("fsm.unused_event", sev, {"model": m["id"], "event": e},
-                                   "イベント『%s』はどの状態でも定義されていません。"
-                                   "どの状態で発生し、どこへ遷移しますか？"
-                                   "（不要なら @events から削除してください）" % e, related))
-                continue
-            nb = set().union(*[adj[s] for s in S]) - S
-            for s in states:
-                if s in S or s in m["terminal"] or (s.lower(), e.lower()) in m["impossible"]:
-                    continue
-                if s not in nb:
-                    suppressed += 1
-                    continue
-                findings.append(_f("fsm.state_event_hole", sev,
-                                   {"model": m["id"], "state": s, "event": e},
-                                   "状態『%s』のときにイベント『%s』が発生したらどうなりますか？"
-                                   "（遷移先／エラー扱い／起こり得ない、のいずれか）" % (s, e),
-                                   related))
-        reach, stack = ({m["initial"]}, [m["initial"]]) if m["initial"] else (set(), [])
-        while stack:
-            cur = stack.pop()
-            for a, e, b in m["trans"]:
-                if a == cur and b not in reach:
-                    reach.add(b); stack.append(b)
-        for s in states:
-            if s not in reach:
-                findings.append(_f("fsm.unreachable", "medium", {"model": m["id"], "state": s},
-                                   "状態『%s』はどこからも到達できません。遷移の定義漏れですか？" % s,
-                                   related, kind="unreachable"))
-            if s not in m["terminal"] and not any(t[0] == s for t in m["trans"]):
-                findings.append(_f("fsm.dead_end", "high", {"model": m["id"], "state": s},
-                                   "状態『%s』から出る遷移がありません。ここが終端で正しいですか？"
-                                   "正しければ @terminal に宣言してください。" % s,
-                                   related, kind="dead_end"))
-        summary.append({"model": m["id"], "states": len(states), "events": len(m["events"]),
-                        "suppressed": suppressed})
-    return findings, summary
-
-
 # ── 決定グラフの規約と健全性 ─────────────────────────────────
 def graph_checks(proj, an):
     f, items, res = [], proj.items, an["result"]
@@ -277,8 +186,35 @@ def graph_checks(proj, an):
             f.append(_f("rule.id_mismatch", "medium", {"item": iid, "file": it["file"]},
                         "%s の ID とファイル名（%s）が一致しません。"
                         "リンクも検索も当たらなくなります。" % (iid, stem), kind="rule"))
+    seen_pairs = set()
     for iid, it in items.items():
         agg = model.is_aggregator(it)
+        # 両立しない（conflicts）。両方決まっていれば矛盾。片方だけなら、もう片方は取下げ候補。
+        # 辺にはしない（順番も影響度も変えない）。ここで見るだけ。
+        for ref in it["typed"]["conflicts"]:
+            other = proj.resolve(ref)
+            if not other or other == iid:
+                continue
+            pair = tuple(sorted((iid, other)))
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            o = items[other]
+            if DROPPED in (it["status"], o["status"]):
+                continue
+            a_set = it["status"] in (DECIDED, PROVISIONAL)
+            b_set = o["status"] in (DECIDED, PROVISIONAL)
+            if a_set and b_set:
+                f.append(_f("graph.conflict", "high", {"items": list(pair)},
+                            "『%s』と『%s』は両立しないと宣言されていますが、両方とも決まっています。"
+                            "どちらかを取下げるか、宣言を見直してください。"
+                            % (it["title"], o["title"]), list(pair), kind="conflict"))
+            elif a_set or b_set:
+                dec, pend = (it, o) if a_set else (o, it)
+                f.append(_f("graph.conflict_pending", "low",
+                            {"decided": dec["id"], "pending": pend["id"]},
+                            "『%s』が決まったので、両立しない『%s』は取下げ候補です。"
+                            % (dec["title"], pend["title"]), [pend["id"]], kind="conflict"))
         # 規約: 前提リンクは所定の見出しの中だけ
         if it["stray_links"]:
             f.append(_f("rule.stray_link", "low", {"item": iid, "links": it["stray_links"][:3]},
@@ -379,9 +315,8 @@ def graph_checks(proj, an):
 def run(proj):
     from . import turns
     an = graph.analyse(proj)
-    grids, fsms = load_grids(proj), load_fsms(proj)
-    gf, gsum = grid_gaps(proj, grids)
-    ff, fsum = fsm_gaps(proj, fsms)
+    gf, gsum = grid_gaps(proj, load_grids(proj))
+    ff, fsum = fsl.gaps(proj)   # 検証は fslc、状態×イベントの穴は reqmap
     findings = graph_checks(proj, an) + gf + ff + turns.check(proj)
     findings.sort(key=lambda x: (SEV[x["severity"]], x["check"]))
     # **IDは内容から決める。** 並び順で採番すると、1件増えただけで全部のIDがずれ、
@@ -391,5 +326,5 @@ def run(proj):
                                                 sort_keys=True)
         x["id"] = "f-" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
     return {"analysis": an, "findings": findings,
-            "grids": gsum, "fsms": fsum,
+            "grids": gsum, "fsl": fsum,
             "generated_at": model.today().isoformat()}

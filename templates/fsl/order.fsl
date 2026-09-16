@@ -1,0 +1,64 @@
+// 状態遷移の仕様（fslc の requirements 方言。https://github.com/ymm-oss/fsl）
+//
+// 役割分担: **reqmap が問い、fslc が検証する。**
+//   fslc    仕様の内部整合（受入基準・禁止経路・不変条件・到達性・行き止まり）
+//   reqmap  状態×イベントの穴を「確認観点」として出し、決定と仕様のずれを見張る
+// 二重送信・二重決済・例外経路の欠落は、ほぼこのファイルから出ます。
+//
+// reqmap 固有の指令（fslc からは見えないコメント）
+//   @area        どの領域の話か（観点の重み付け）
+//   @depends_on  この仕様を確定させるのに要る論点
+//   @events      まだ遷移が無いイベントも網羅の対象に含める
+//   @critical    隣接に限らず全状態で問うイベント。キャンセル・返金など揉めるもの
+//   @impossible  「起こり得ない」と判断したマス。**判断した記録が残ることが大事**
+//                （未検証の記録。検証したいなら forbidden に書く）
+//
+// fslc の注釈（遷移の前の行に書く）
+//   @reqmap.event("cancel")  同じイベントを複数の遷移に分けたとき、表の上で1つにまとめる
+//   @undecided("Q-006 理由") 意図的な未決定。**先頭に論点IDを書く。** 論点が open ならそれが
+//                            正常。論点が決まっているのに残っていれば「決定が仕様に未反映」
+//
+// 決まったことは仕様に写す: 遷移を足す／forbidden で拒否を書く／when で条件を付ける。
+// 後から足した決定が前の決定と矛盾すると、fslc が forbidden の受理として検出します。
+
+// @area: A-04
+// @events: refund
+// @critical: cancel
+// @impossible: Draft x pay      // 未送信の注文に決済は発生しない
+// @impossible: Draft x timeout
+
+requirements OrderStatus {
+  process Order {
+    stages Draft, PendingPayment, Paid, Preparing, ReadyForPickup, Delivered, Cancelled
+    initial Draft
+    transition submit  Draft          -> PendingPayment by Customer covers REQ-ORDER-001 "顧客が注文を送信する"
+    transition pay     PendingPayment -> Paid           by Customer covers REQ-ORDER-002 "支払いで注文が確定する"
+    transition timeout PendingPayment -> Cancelled      by System   covers REQ-ORDER-003 "未払いのまま期限切れで取消"
+    transition cancel  PendingPayment -> Cancelled      by Customer covers REQ-ORDER-004 "支払前は顧客が取消できる"
+    transition accept  Paid           -> Preparing      by Shop     covers REQ-ORDER-005 "店舗が受注して調理に入る"
+    transition ship    Preparing      -> ReadyForPickup by Shop     covers REQ-ORDER-006 "調理完了で受取可能"
+    transition deliver ReadyForPickup -> Delivered      by Shop     covers REQ-ORDER-007 "受渡しで完了"
+  }
+
+  // 「拒否する」と決めたマスは forbidden に書く。検証されるので、後からの変更で破れれば出る。
+  forbidden FB-ORDER-001 "送信済み注文の再送信は拒否される" {
+    submit(0) submit(0)
+    expect rejected
+  }
+  forbidden FB-ORDER-002 "支払済み注文への再決済は拒否される" {
+    submit(0) pay(0) pay(0)
+    expect rejected
+  }
+  acceptance AC-ORDER-001 "正常系: 送信→支払→受注→調理→受渡" {
+    submit(0) pay(0) accept(0) ship(0) deliver(0)
+    expect Order 0 in Delivered
+  }
+
+  // 止まって正しい状態。宣言しないと「行き止まり」として出る。
+  terminal { forall c: Order { stage(c) == Delivered or stage(c) == Cancelled } }
+}
+
+// 検証の範囲。ドメインの事実ではない（注文が2件しか無い、という意味ではない）。
+verify {
+  instances Order = 2
+}

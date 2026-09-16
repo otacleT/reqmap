@@ -12,6 +12,7 @@
     reqmap view            HTML を出力する
     reqmap json            すべてを JSON で出す（他ツール連携用）
     reqmap changes         前回見たときから書き換わった決定を出す（**何も書かない**）
+    reqmap changes --ack   「ここまでの決定は見た」を記録する（changes の基準になる）
     reqmap review          Change Set を点検する（引用照合とゲート分類。**何も書かない**）
     reqmap apply           Change Set のうち auto のものを適用する
     reqmap apply --approve <id,...>   human のものを名指しで適用する
@@ -30,7 +31,7 @@ import os
 import shutil
 import sys
 
-from . import changeset, decisions, fm, gaps, graph, model, turns
+from . import changeset, decisions, fm, fsl, gaps, graph, model, seen, turns
 from .model import ACTIVE, DECIDED, DROPPED, PROVISIONAL, SETTLED
 
 WRITE_KEYS = ("blocks_count", "blocking", "impact_count", "ready", "depth",
@@ -46,10 +47,10 @@ def cmd_init(root, args):
     if os.path.exists(os.path.join(root, model.CONFIG)) and "--force" not in args:
         print("すでに %s があります。--force で上書きします。" % model.CONFIG)
         return 1
-    for d in ("questions", "models/grids", "models/fsm", ".reqmap"):
+    for d in ("questions", "models/grids", "models/fsl", ".reqmap"):
         os.makedirs(os.path.join(root, d), exist_ok=True)
     shutil.copy(os.path.join(TEMPLATES, "reqmap.yml"), os.path.join(root, model.CONFIG))
-    for src in ("grids", "fsm"):
+    for src in ("grids", "fsl"):
         sd = os.path.join(TEMPLATES, src)
         for f in sorted(os.listdir(sd)):
             dst = os.path.join(root, "models", src, f)
@@ -64,6 +65,7 @@ def cmd_init(root, args):
     print("作りました: %s" % root)
     print("  reqmap.yml        まず milestone と areas を書く")
     print("  models/grids/     いらない観点のグリッドは消す。**消すより skip に理由を書くほうがよい**")
+    print("  models/fsl/       主フローの状態遷移を fslc の requirements 方言で書く（fslc が検証する）")
     print("  questions/        _template.md をコピーして論点を1つ作る")
     print("\n次: reqmap gaps  で、何も起票していない状態からどれだけ観点が出るか見る")
     return 0
@@ -95,6 +97,11 @@ def cmd_recalc(root, args):
     print("%s  %d 論点 / 更新 %d 件%s"
           % (proj.cfg.get("name") or os.path.basename(proj.root), len(proj.items),
              len(changed), "（--check のため書いていません）" if check_only else ""))
+    if an["cycle_nodes"]:
+        # 循環に乗っている論点だけ初期値に落とす。黙って落とすと「なぜ期限が消えたか」が分からない。
+        print("循環 %d 本。%s は循環のため depth / need_by が初期値です"
+              "（どれかを先に仮決定してください）。他の論点は通常どおり計算しています。"
+              % (len(an["cycles"]), "・".join(an["cycle_nodes"][:6])))
     if rules:
         print("\n規約違反・要確認 %d 件" % len(rules))
         for f in rules[:10]:
@@ -107,50 +114,26 @@ def cmd_recalc(root, args):
 
 
 # ── gaps ────────────────────────────────────────────────────
-SNAP = "findings-seen.json"
-
-
-def _snap_path(proj):
-    return os.path.join(proj.root, proj.cfg["out_dir"], SNAP)
-
-
-def _load_snap(proj):
-    try:
-        return json.load(open(_snap_path(proj), encoding="utf-8"))
-    except Exception:
-        return None
-
-
-def _seen(proj):
-    d = _load_snap(proj)
-    return set(d["ids"]) if d else None
-
-
 def cmd_gaps(root, args):
     proj = model.Project(root)
     out = gaps.run(proj)
     only = [a for a in args if not a.startswith("--")]
     F = [f for f in out["findings"] if not only or any(o in f["check"] for o in only)]
 
-    seen = _seen(proj)
+    base = seen.findings_seen(proj)
+    seen_ids = base["ids"] if base else None
     if "--snapshot" in args:
-        dest = _snap_path(proj)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        snap = decisions.snapshot(proj)
-        json.dump({"at": model.today().isoformat(),
-                   "ids": sorted(f["id"] for f in out["findings"]),
-                   "decisions": snap},
-                  open(dest, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-        print("観点 %d 件・決定 %d 件を「見た」として記録しました。"
-              % (len(out["findings"]), len(snap)))
-        print("次からは `gaps --new` で新しい観点だけ、"
-              "`changes` で書き換わった決定だけが出ます。")
+        # 観点の既読だけを進める。決定の基準は `changes --ack`（進むタイミングが違う）。
+        seen.save_findings_seen(proj, [f["id"] for f in out["findings"]])
+        print("観点 %d 件を「見た」として記録しました。次からは `gaps --new` で新しい観点だけが出ます。"
+              % len(out["findings"]))
+        print("決定の基準は別です。`reqmap changes --ack` で進めます。")
         return 0
     if "--new" in args:
-        if seen is None:
+        if seen_ids is None:
             print("基準がありません。まず `reqmap gaps --snapshot` を実行してください。")
             return 1
-        F = [f for f in F if f["id"] not in seen]
+        F = [f for f in F if f["id"] not in seen_ids]
         if not F:
             print("前回から新しく出た観点はありません。")
             return 0
@@ -159,19 +142,22 @@ def cmd_gaps(root, args):
         if not F:
             return 0
     if "--json" in args:
-        print(json.dumps(out, ensure_ascii=False, indent=2))
+        print(json.dumps(out, ensure_ascii=False, indent=2, default=_jsonable))
         return 0
 
     print("# 確認観点  %s  (%s)" % (proj.cfg.get("name") or "", out["generated_at"]))
-    sup = sum(s["suppressed"] for s in out["fsms"])
-    line = "  findings %d 件" % len(F) + ("（FSM 自動抑制 %d セル）" % sup if sup else "")
-    if seen is not None:
+    sup = sum(s["suppressed"] for s in out["fsl"])
+    line = "  findings %d 件" % len(F) + ("（状態×イベントの自動抑制 %d マス）" % sup if sup else "")
+    if seen_ids is not None:
         line += "  / 前回から新規 %d 件" % len(
-            [f for f in out["findings"] if f["id"] not in seen])
+            [f for f in out["findings"] if f["id"] not in seen_ids])
     print(line)
     for g in out["grids"]:
         print("  %-14s %d マス中  空白 %d / 候補あり %d / 紐付け済み %d / skip %d"
               % (g["grid"], g["total"], g["empty"], g["near"], g["linked"], g["skip"]))
+    for s in out["fsl"]:
+        print("  %-14s 状態 %d × イベント %d  遷移 %d  穴 %d  検証 %s"
+              % (s["model"], s["stages"], s["events"], s["trans"], s["holes"], s["verify"]))
     by = {}
     for f in F:
         by.setdefault(f["check"], []).append(f)
@@ -202,8 +188,13 @@ def cmd_status(root, args):
 
     ready = sorted([(res[i]["priority"], i) for i, it in proj.items.items()
                     if it["status"] in (model.OPEN,) and res[i]["ready"]
-                    and i not in out_already
+                    and not res[i]["derived"] and i not in out_already
                     and it["kind"] not in ("area", "constraint")], reverse=True)[:5]
+    # derives の上流が決まった論点は「聞く」ものではなく「書き取る」もの。
+    # 「いま聞け」に混ぜると、聞かなくてよいものを相手に投げてしまう。
+    derived = sorted([(res[i]["priority"], i) for i, it in proj.items.items()
+                      if it["status"] in (model.OPEN,) and res[i]["ready"] and res[i]["derived"]
+                      and it["kind"] not in ("area", "constraint")], reverse=True)[:5]
     if ready:
         lines.append("■ いま聞けて、いちばん効くもの（まだ出していないもの）")
         for p, i in ready:
@@ -214,6 +205,11 @@ def cmd_status(root, args):
                          % (r["ask_by"] or "?", late, r["need_by"] or "?",
                             r["blocks_count"], i, it["title"][:34]))
 
+    if derived:
+        lines.append("■ 上流が決まったので機械的に決められるもの（聞かなくてよい） %d 件" % len(derived))
+        for p, i in derived:
+            lines.append("  書き取る  %s  %s" % (i, proj.items[i]["title"][:34]))
+
     if waiting:
         lines.append("■ 出したまま返事が来ていない %d 件" % len(waiting))
         for i, f in sorted(waiting.items(), key=lambda x: -x[1]["target"]["days"])[:4]:
@@ -222,7 +218,8 @@ def cmd_status(root, args):
                             proj.items[i]["title"][:30]))
 
     hot = [f for f in out["findings"] if f["severity"] == "high"
-           and f["kind"] in ("stale_assumption", "unsound_decision", "conflict", "churn")]
+           and f["kind"] in ("stale_assumption", "unsound_decision", "conflict", "churn",
+                             "contradiction", "spec_error", "stale_undecided")]
     if hot:
         lines.append("■ 前提が崩れかけているもの %d 件" % len(hot))
         for f in hot[:4]:
@@ -254,12 +251,14 @@ def cmd_status(root, args):
                      " （reqmap review で詳細）"
                      % (pend[changeset.HUMAN], pend[changeset.BLOCKED]))
 
-    snap = _load_snap(proj)
-    if snap:
-        n = len([f for f in out["findings"] if f["id"] not in set(snap["ids"])])
+    fseen = seen.findings_seen(proj)
+    if fseen:
+        n = len([f for f in out["findings"] if f["id"] not in fseen["ids"]])
         if n:
             lines.append("■ 前回見たときから新しく出た観点 %d 件（reqmap gaps --new）" % n)
-        rew, add, _ = decisions.changed(proj, snap.get("decisions") or {})
+    dseen = seen.decisions_seen(proj)
+    if dseen:
+        rew, add, _ = decisions.changed(proj, dseen["decisions"])
         if rew or add:
             lines.append("■ 決定の変化  書き換わった %d 件 / 新しく決まった %d 件"
                          "（reqmap changes）" % (len(rew), len(add)))
@@ -282,13 +281,17 @@ def cmd_changes(root, args):
     **決定が変わったことに誰も気づかない**こと。ここを見れば、自分の設計に効くかは
     自分で判断できる。設計側に記帳は要らない。"""
     proj = model.Project(root)
-    snap = _load_snap(proj)
-    if not snap:
-        print("基準がありません。まず `reqmap gaps --snapshot` を実行してください。")
+    if "--ack" in args:
+        snap = decisions.snapshot(proj)
+        seen.save_decisions_seen(proj, snap)
+        print("決定 %d 件を「見た」として記録しました。次からは書き換わった決定だけが出ます。" % len(snap))
+        return 0
+    base = seen.decisions_seen(proj)
+    if not base:
+        print("基準がありません。まず `reqmap changes --ack` で「ここまで見た」を記録してください。")
         return 1
-    rew, add, gone = decisions.changed(proj, snap.get("decisions") or {})
-    print("# 決定の変化  %s 以降  (%s)"
-          % (snap.get("at", "?"), model.today().isoformat()))
+    rew, add, gone = decisions.changed(proj, base["decisions"])
+    print("# 決定の変化  %s 以降  (%s)" % (base["at"], model.today().isoformat()))
     if not (rew or add or gone):
         print("  書き換わった決定はありません。")
         return 0
@@ -305,7 +308,7 @@ def cmd_changes(root, args):
         print("\n■ 決定から外れた %d 件（再オープン・取下げ）" % len(gone))
         for x in gone:
             print("  %-10s [%s] %s" % (x["id"], x["status"], x["title"][:40]))
-    print("\n見終わったら `reqmap gaps --snapshot` で基準を進めてください。")
+    print("\n見終わったら `reqmap changes --ack` で基準を進めてください。")
     return 0
 
 
@@ -355,6 +358,43 @@ def cmd_doctor(root, args):
         else:
             ok.append("%s: 行の語はすべて既存論点に当たっています" % g["id"])
 
+    # FSL 仕様。fslc が無い／読めない仕様は、観点が出ない原因なので先に言う。
+    specs = fsl.load_specs(proj)
+    if specs:
+        tool = fsl.fslc_path()
+        if not tool:
+            warn.append("fslc が見つかりません。FSL 仕様 %d 本の検査を省略します"
+                        "（入れ方: https://github.com/ymm-oss/fsl）" % len(specs))
+        else:
+            import subprocess
+            v = subprocess.run([tool, "--version"], capture_output=True, text=True).stdout.strip()
+            ok.append("%s を使います" % (v or "fslc"))
+            for sp in specs:
+                if sp["src"]["legacy"]:
+                    warn.append("%s: fslc の仕様として読めません（jssm 形式の旧ファイル？）。"
+                                "requirements 方言に書き換えてください" % sp["file"])
+                    continue
+                chk = fsl.run_fslc(["check", sp["path"]], proj.root)
+                if chk.get("result") == "error" and chk.get("kind") not in ("forbidden", "acceptance"):
+                    warn.append("%s: fslc で読めません（%s）: %s"
+                                % (sp["file"], chk.get("kind"), str(chk.get("message"))[:80]))
+                    continue
+                ker = fsl.run_fslc(["kernel", sp["path"]], proj.root)
+                procs = fsl.processes(ker) if ker.get("actions") is not None else []
+                if not procs:
+                    warn.append("%s: process が見つからず、状態×イベントの表を組めません"
+                                "（fslc の検証だけが効きます）" % sp["file"])
+                else:
+                    ok.append("%s: 状態 %d・遷移 %d%s"
+                              % (sp["file"], sum(len(p["stages"]) for p in procs),
+                                 sum(len(p["trans"]) for p in procs),
+                                 "（%s %s が受理される。gaps で詳細）"
+                                 % (chk.get("kind"), chk.get("id")) if chk.get("result") == "error" else ""))
+                for u in sp["src"]["undecided"]:
+                    if fsl._ref(proj, u["reason"]) is None:
+                        warn.append("%s: @undecided『%s』の先頭に論点IDがありません"
+                                    % (sp["file"], u["reason"][:30]))
+
     t = turns.summary(proj)
     if t["total"]:
         ok.append("やりとりの記録がある論点 %d/%d 件・往復の実測 %d 回%s"
@@ -381,6 +421,15 @@ def cmd_doctor(root, args):
     return 0
 
 
+def _jsonable(o):
+    """json.dumps の default。log の日付は date で持っているので ISO 文字列にする。"""
+    if isinstance(o, (datetime.date, datetime.datetime)):
+        return o.isoformat()
+    if isinstance(o, set):
+        return sorted(o)
+    return str(o)
+
+
 def cmd_json(root, args):
     proj = model.Project(root)
     out = gaps.run(proj)
@@ -394,9 +443,10 @@ def cmd_json(root, args):
     out["milestone"] = str(proj.cfg.get("milestone") or "")
     dest = os.path.join(proj.root, proj.cfg["out_dir"], "reqmap.json")
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    open(dest, "w", encoding="utf-8").write(json.dumps(out, ensure_ascii=False, indent=2))
+    text = json.dumps(out, ensure_ascii=False, indent=2, default=_jsonable)
+    open(dest, "w", encoding="utf-8").write(text)
     if "--stdout" in args:
-        print(json.dumps(out, ensure_ascii=False, indent=2))
+        print(text)
     else:
         print(dest)
     return 0

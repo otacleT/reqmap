@@ -14,6 +14,8 @@ allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/reqmap-cli:*) Read
    `reqmap status` で次に何が聞けるようになったかを続けて出すと親切です
 3. 「決定から外れた（再オープン・取下げ）」は**最優先**。それを前提に進んだ作業が
    全部宙に浮いています
+4. 書き換わった決定が状態遷移に関わるなら、`models/fsl/*.fsl` にも写されているか確かめる。
+   写されていなければ `reqmap gaps fsl` で `fsl.stale_undecided` が出ているはずです
 
-見終わったら `reqmap gaps --snapshot` で基準を進めるか聞いてください。
+見終わったら `reqmap changes --ack` で基準を進めるか聞いてください。
 **勝手に進めないこと。** 基準を進めると、次回から同じ変化が出なくなります。

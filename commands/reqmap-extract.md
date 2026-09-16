@@ -1,7 +1,7 @@
 ---
 description: 議事録・打ち合わせメモから論点を抽出して Change Set を作る。引用を原文と照合してから反映する
 argument-hint: [議事録のパス] [プロジェクトのパス]
-allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/reqmap-cli:*) Read Glob Grep Write Task
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/reqmap-cli:*) Read Glob Grep Write Agent Task
 ---
 
 議事録: `$1`
@@ -20,7 +20,9 @@ allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/reqmap-cli:*) Read Glob Grep W
 
 1. `reqmap review --root=${2:-.}` を実行して分類を確認する
 2. `blocked` があれば**先に伝える**。モデルが原文に無いことを書いた合図です
-3. `human` のものを**1件ずつ、何を確認したいかを添えて**ユーザーに聞く。選択式で
+3. `human` のものを**1件ずつ、何を確認したいかを添えて**ユーザーに聞く。選択式で。
+   「引用が短い／複数回出現する」で human になったものは、出所が特定できる一文に
+   引き直せば auto に戻ります
 4. 合意が取れたら `reqmap apply --root=${2:-.} --approve=<id,...>` を実行
 5. 最後に `reqmap recalc --root=${2:-.}`
 

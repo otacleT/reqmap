@@ -39,7 +39,8 @@ $R apply  --root=<dir>    # Change Set の auto を適用する
 $R doctor --root=<dir>    # この vault をちゃんと読めているかを点検する
 $R changes --root=<dir>   # 前回見たときから書き換わった決定
 $R gaps --new --root=<dir>      # 前回見たときから新しく出た観点だけ
-$R gaps --snapshot --root=<dir> # 「ここまでは見た」を記録する
+$R gaps --snapshot --root=<dir> # 観点を「ここまでは見た」と記録する
+$R changes --ack --root=<dir>   # 決定を「ここまでは見た」と記録する（gaps --snapshot とは別の基準）
 ```
 
 ## ID は slug
@@ -108,6 +109,10 @@ Change Set は1件ごとに原文からの逐語引用を持ち、**機械が原
   ページは増やさず、結合だけ持つ。
 - 決まったら `status: decided` にして `## 決まったこと` に結論と根拠を書く。
   **根拠のない決定は書かない。**
+- 状態遷移に関わる決定は `models/fsl/*.fsl` にも写す（遷移・`forbidden`・`when`）。
+  書き方は fslc 同梱の `fsl-requirements` スキル。写した決定は fslc が検証し、
+  後から矛盾する決定が入ると `fsl.forbidden_accepted` で出る。
+  自由文のままの決定どうしの矛盾は、機械には見えない。
 
 ### 3.5 やりとりを log に残す
 
@@ -157,6 +162,13 @@ findings のIDは内容から決まるので、1件増えても他のIDはずれ
 **skip には理由を書く。** 理由のない skip は、検討したのか忘れたのか区別がつかない。
 skip は件数を減らす欄ではなく、検討した証跡を残す欄。
 
+**仕様の未決定には論点IDを付ける。** `@undecided("Q-006 返金条件は決定待ち")` の先頭が論点ID。
+無いと `fsl.undecided_unlinked` になり、論点が決まっても仕様が古いままなことに気づけない。
+論点が open な undecided は正常なので何も出ない。
+
+**`derives` の論点は聞かない。** 上流が決まれば機械的に従属するので、`status` は
+「書き取る」ものとして別枠に出す。相手に投げる質問に混ぜない。
+
 ## ファイルの置き場所
 
 ```
@@ -164,7 +176,7 @@ skip は件数を減らす欄ではなく、検討した証跡を残す欄。
   reqmap.yml           設定（マイルストーン・領域・回答日数）
   questions/           1論点1ファイル。Obsidian でそのまま開ける
   models/grids/*.yml   N×M の網羅グリッド → 観点の供給源
-  models/fsm/*.fsl     状態遷移（jssm互換）→ 状態×イベントの網羅
+  models/fsl/*.fsl     状態遷移の仕様（fslc の requirements 方言）→ 検証と状態×イベントの網羅
   .reqmap/             出力（HTML・JSON）。生成物なので手で触らない
 ```
 
@@ -183,7 +195,7 @@ Obsidian は**任意**。`## 前提` の wikilink がそのままグラフビュ
 
 ```bash
 $R changes --root=<dir>          # 前回見たときから書き換わった決定
-$R gaps --snapshot --root=<dir>  # 見終わったら基準を進める
+$R changes --ack --root=<dir>    # 見終わったら基準を進める（観点の既読 gaps --snapshot とは別）
 ```
 
 分散して設計しているとき本当に困るのは「どの設計書が古いか」ではなく、
@@ -202,4 +214,5 @@ $R gaps --snapshot --root=<dir>  # 見終わったら基準を進める
 
 ## グリッドと FSL を触るとき
 
-`coverage-grids` スキルを読むこと。観点の質はここで決まる。
+グリッドと、FSL の reqmap 向け指令（`@critical` `@impossible` など）は `coverage-grids` スキル。
+FSL 仕様そのものは fslc 同梱の `fsl-requirements` スキル。観点の質はここで決まる。

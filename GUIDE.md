@@ -14,6 +14,13 @@
 開発中は `claude --plugin-dir /path/to/reqmap` でも試せます。
 CLI 単体でも動きます（**外部依存なし**。PyYAML も不要）。
 
+状態遷移の検証には [fslc](https://github.com/ymm-oss/fsl) を使います。無くても動きますが、
+その検査だけ省略されます（`fsl.tool_missing` が出ます）。
+
+```bash
+git clone https://github.com/ymm-oss/fsl ~/.fsl && bash ~/.fsl/install.sh
+```
+
 ---
 
 ## 1. 立ち上げ — 案件につき1回、1〜2時間
@@ -59,19 +66,40 @@ CLI 単体でも動きます（**外部依存なし**。PyYAML も不要）。
 業務の主フロー（注文・予約・申込）と、非同期処理の待ち受けあたりが効きます。
 **画面遷移を全部FSLにすると書くコストで死にます。**
 
-```
-machine_name: 注文ステータス;
+FSL は [fslc](https://github.com/ymm-oss/fsl) の `requirements` 方言で書きます。
+**reqmap が問い、fslc が検証する**、という分担です。
+
+```fsl
 // @area: A-04
-// @events: submit, pay, timeout, cancel, refund
-// @terminal: delivered, cancelled
-// @impossible: draft x pay   // 未送信の注文に決済は発生しない
+// @events: refund           // まだ遷移が無いイベントも網羅の対象にする
+// @critical: cancel         // キャンセルは全状態で問う（揉めるところ）
+// @impossible: Draft x pay  // 未送信の注文に決済は発生しない
 
-draft            'submit' -> pending_payment;
-pending_payment  'pay'    -> paid;
+requirements OrderStatus {
+  process Order {
+    stages Draft, PendingPayment, Paid, Cancelled
+    initial Draft
+    transition submit Draft          -> PendingPayment by Customer covers REQ-ORDER-001 "注文を送信する"
+    transition pay    PendingPayment -> Paid           by Customer covers REQ-ORDER-002 "支払いで確定する"
+  }
+  forbidden FB-ORDER-001 "送信済み注文の再送信は拒否される" {
+    submit(0) submit(0)
+    expect rejected
+  }
+  terminal { forall c: Order { stage(c) == Paid or stage(c) == Cancelled } }
+}
+verify { instances Order = 2 }
 ```
 
-これも私が下書きできますが、**レビューは飛ばせません。**
+雛形は `models/fsl/order.fsl` に入っています。書き方は fslc 同梱の `fsl-requirements` スキルに
+任せてください（私が下書きします）。**レビューは飛ばせません。**
 間違ったFSLは自信たっぷりに間違った観点を出します。
+
+**決まったことは仕様に写します。** 「二重決済は拒否」と決まったら `forbidden` に、
+「調理中もキャンセル可」と決まったら遷移に。写しておくと、後から矛盾する決定が入ったときに
+fslc が `fsl.forbidden_accepted` として検出します。まだ決まっていない箇所は
+`@undecided("Q-006 返金条件は決定待ち")` と**論点IDを先頭に**書いておけば、
+その論点が決まったのに仕様が古いままのとき `fsl.stale_undecided` が出ます。
 
 ### 1-4. 点検して回す
 
@@ -93,7 +121,8 @@ pending_payment  'pay'    -> paid;
 /reqmap-status     動くものがあるか
 ```
 
-どちらも**何も書きません。**
+どちらも**何も書きません。** `changes` を見終わったら `reqmap changes --ack` で
+基準を進めます（これだけが書き込み。`.reqmap/` の自分の基準にだけ書きます）。
 
 `status` が出すもの:
 
@@ -154,6 +183,9 @@ pending_payment  'pay'    -> paid;
 空のままにすると `rule.decided_without_rationale` が出ます。
 **根拠のない決定は3か月後に必ず蒸し返されます。**
 
+状態遷移に関わる決定なら `models/fsl/*.fsl` にも写します（遷移・`forbidden`・`when`）。
+写さないと、その決定はいつまでも自由文のままで、後から来る矛盾は誰にも見えません。
+
 ### 4-3. やりとりを記録する
 
 ```yaml
@@ -170,9 +202,12 @@ log:
 
 ```
 /reqmap-recalc
-/reqmap-view          # 関係者に見せるとき
-reqmap gaps --snapshot  # 「ここまで見た」の基準を進める
+/reqmap-view            # 関係者に見せるとき
+reqmap gaps --snapshot  # 観点を「ここまで見た」と記録する（定例前に1回）
+reqmap changes --ack    # 決定を「ここまで見た」と記録する（毎朝 changes を見たあと）
 ```
+
+基準は2つあり、進むタイミングが違います。1つにすると片方の差分が黙って消えます。
 
 ---
 
@@ -181,7 +216,7 @@ reqmap gaps --snapshot  # 「ここまで見た」の基準を進める
 **設計ハーネスはありません。** 設計は各メンバーがそれぞれAIエージェントと進める前提です。
 
 各自が毎朝 `/reqmap-changes` を見て、**自分の設計に効くかを自分で判断します。**
-設計側に記帳は要りません。
+見終わったら `reqmap changes --ack`。設計側に記帳は要りません。
 
 `.reqmap/` は**各自のもの**です（`.gitignore` 済み）。「前回自分が見たとき」の基準が
 入るので、コミットすると他人の基準で上書きされます。
@@ -201,8 +236,13 @@ Change Set を書いてもいいし、手で `questions/` にファイルを作�
 | 全部 high で読めない | `reqmap.yml` の `areas` のリスクを見直す |
 | 毎朝同じものが出る | `gaps --snapshot` してから `gaps --new` |
 | 抽出が blocked だらけ | 原文が読めていない。PDFならテキスト化してから |
+| 抽出が human だらけ | 引用が短いか汎用的。出所が特定できる一文を引く（`quote_min_chars`） |
+| `fsl.spec_error` が出る | 仕様が fslc で読めていない。`doctor` の行番号を見て直す |
+| `fsl.forbidden_accepted` が出る | 後から足した遷移が前の決定と矛盾している。**どちらが正しいかは人が決める** |
+| `fsl.tool_missing` が出る | fslc が入っていない。0 章のインストールを |
 
-グリッドとFSLを触るときは `coverage-grids` スキルを読んでください。
+グリッドと FSL の reqmap 向け指令を触るときは `coverage-grids` スキル、
+FSL 仕様そのものは fslc 同梱の `fsl-requirements` スキルを読んでください。
 
 ---
 
@@ -228,6 +268,7 @@ Change Set を書いてもいいし、手で `questions/` にファイルを作�
 | `reqmap init <dir>` | あり |
 | `reqmap doctor` | なし |
 | `reqmap changes` | なし |
+| `reqmap changes --ack` | 自分の基準のみ（`.reqmap/`） |
 | `reqmap status` | なし |
 | `reqmap gaps [--new] [--snapshot]` | `--snapshot` のみ |
 | `reqmap recalc [--check]` | `--check` 以外はあり（計算済み7キーだけ） |

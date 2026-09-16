@@ -1,6 +1,6 @@
 ---
 name: coverage-grids
-description: 網羅グリッド（models/grids/*.yml）やFSL（models/fsm/*.fsl）を作る・直す・調整するときに読む。確認観点が出すぎる／出なさすぎるとき、新しい観点の軸を足したいとき、skipの判断をするときにも使う。
+description: 網羅グリッド（models/grids/*.yml）や、FSL（models/fsl/*.fsl）の reqmap 向け指令を作る・直す・調整するときに読む。FSL 仕様そのものの書き方は fsl-requirements スキル。確認観点が出すぎる／出なさすぎるとき、新しい観点の軸を足したいとき、skipの判断をするときにも使う。
 allowed-tools: Read Write Edit Glob Bash(${CLAUDE_PLUGIN_ROOT}/scripts/reqmap-cli:*)
 ---
 
@@ -66,35 +66,69 @@ skip は件数を減らす欄ではなく、**検討した証跡を残す欄**�
 
 ## FSL（状態遷移）
 
-```
-machine_name: 注文ステータス;
+FSL は [fslc](https://github.com/ymm-oss/fsl) の `requirements` 方言。**reqmap が問い、fslc が検証する。**
+仕様そのものの書き方は fslc 同梱の `fsl-requirements` スキルに任せ、ここでは reqmap 側の
+指令と、観点の出方だけを扱う。
 
+```fsl
 // @area: A-04
-// @events: submit, pay, timeout, cancel, refund
-// @terminal: delivered, cancelled
-// @impossible: draft x pay      // 未送信の注文に決済は発生しない
-// @depends_on: Q-001
+// @depends_on: Q-006
+// @events: refund            // まだ遷移が無いイベントも網羅の対象にする
+// @critical: cancel          // 隣接に限らず全状態で問う
+// @impossible: Draft x pay   // 未送信の注文に決済は発生しない（未検証の記録）
 
-draft            'submit' -> pending_payment;
-pending_payment  'pay'    -> paid;
+requirements OrderStatus {
+  process Order {
+    stages Draft, PendingPayment, Paid, Cancelled
+    initial Draft
+    transition submit Draft          -> PendingPayment by Customer covers REQ-ORDER-001 "注文を送信する"
+    transition pay    PendingPayment -> Paid           by Customer covers REQ-ORDER-002 "支払いで確定する"
+    @reqmap.event("cancel")                            // 表の上では cancel と同じイベント
+    @undecided("Q-006 支払後の返金条件は決定待ち")      // 先頭は論点ID
+    transition cancel_paid Paid      -> Cancelled      by Customer covers REQ-ORDER-009 "支払後のキャンセル"
+  }
+  forbidden FB-ORDER-002 "支払済み注文への再決済は拒否される" {   // 「拒否する」と決めたマスは forbidden に
+    submit(0) pay(0) pay(0)
+    expect rejected
+  }
+  terminal { forall c: Order { stage(c) == Paid or stage(c) == Cancelled } }
+}
+verify { instances Order = 2 }
 ```
 
-**全体を形式化しない。** 網羅性が定義できる部分だけ。
-効くのは状態遷移・権限・データライフサイクルの3つ。
+**全体を形式化しない。** 網羅性が定義できる部分だけ。効くのは状態遷移・権限・データライフサイクルの3つ。
 
-状態×イベントは**全マス総当たりにしない**（チェッカ側で対処済み）。
-総当たりは `draft × deliver`（未送信の注文を受け渡す）のような無意味セルで埋まる。
-実測で 31件 → 10件 になり、残った10件は全部意味のある質問だった:
+### 観点の出方
 
-| セル | 実際に聞いていること |
-|---|---|
-| `pending_payment × submit` | **二重送信**したらどうなる？ |
-| `paid × pay` | **二重決済**は防げている？ |
-| `paid × cancel` | 決済後・処理前のキャンセルは返金あり？ |
-| `refund`（未使用） | 返金はどの状態から発生する？ |
+| check | 出どころ | 何を聞いているか |
+|---|---|---|
+| `fsl.state_event_hole` | reqmap（表） | `Paid × pay` 二重決済は？ `Preparing × cancel` 調理中のキャンセルは？ |
+| `fsl.unused_event` | reqmap（表） | `refund` はどの状態から発生する？ |
+| `fsl.forbidden_accepted` | fslc | 後から足した遷移が、前に書いた禁止経路を破っている（決定どうしの矛盾） |
+| `fsl.dead_end` / `fsl.dead_action` / `fsl.unreachable_stage` | fslc | 行き止まり／起きない遷移／到達しない状態 |
+| `fsl.stale_undecided` / `fsl.undecided_unlinked` | reqmap（注釈） | 論点は決まったのに仕様が古い／未決定なのに起票されていない |
 
-「そのイベントが定義済みの状態の**隣**」だけを問い、遠いセルは件数のみ記録する。
-`@impossible` は抑制ではなく**判断の記録**なので、必ずコメントで理由を書く。
+状態×イベントは**全マス総当たりにしない**。総当たりは `Draft × deliver`（未送信の注文を受け渡す）
+のような無意味セルで埋まる。「そのイベントが定義済みの状態の**隣**」だけを問い、遠いセルは件数のみ記録する。
+
+ただし隣接だけだと `Preparing × cancel`（調理中のキャンセル）のような**一番揉めるマスが抑制側に落ちる**。
+キャンセル・返金のように状態を問わず揉めるイベントは `@critical` に書き、全状態で問わせる。
+
+### マスへの答え方
+
+| 答え | 書き方 | 検証 |
+|---|---|---|
+| こう遷移する | `transition` を足す | される |
+| 拒否する | `forbidden` に操作列を書く | される。後から破られれば `fsl.forbidden_accepted` |
+| 起こり得ない | `// @impossible: State x event | 理由` | されない。**判断の記録**として理由を必ず書く |
+| まだ決められない | `@undecided("Q-xxx 理由")` を遷移の前に | 論点が決まったのに残っていれば `fsl.stale_undecided` |
+
+`forbidden` の最終ステップが当たるマスは「回答済み」として表から消える。`@impossible` も同じだが、
+こちらは検証されないので、後から仕様が変わっても気づけない。迷ったら `forbidden`。
+
+同じイベントを複数の遷移に分けたとき（`cancel` と `cancel_paid`）は、遷移の前に
+`@reqmap.event("cancel")` を書く。書かないと `cancel_paid` が別イベントとして表に増え、
+`Paid × cancel` が偽の穴として出る。
 
 ## 語彙を案件から持ち出さない — **実際に起きた失敗**
 

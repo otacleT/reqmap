@@ -1,0 +1,57 @@
+// 注文ステータス（fslc の requirements 方言）。
+// **reqmap が問い、fslc が検証する。** 指令と注釈の説明は templates/fsl/order.fsl を参照。
+//
+// 仕込んだ欠陥（README の表と対応）
+//   - repay: 後日「支払済みでも再決済を受け付ける」と決めて足した遷移。
+//     Q-007 が決まったときに書いた FB-ORDER-002 と矛盾する → fsl.forbidden_accepted
+//   - cancel_paid の @undecided に論点IDが無い → fsl.undecided_unlinked
+//   - refund は @events にあるがどの状態にも遷移が無い → fsl.unused_event
+//
+// ASSUME-1: 状態と遷移は旧サンプル（jssm 表記）をそのまま写した。業務の追加は無い。
+
+// @area: A-04
+// @depends_on: Q-006, Q-007
+// @events: refund
+// @critical: cancel
+// @impossible: Draft x pay      // 未送信の注文に決済は発生しない
+// @impossible: Draft x timeout
+
+requirements OrderStatus {
+  process Order {
+    stages Draft, PendingPayment, Paid, Preparing, ReadyForPickup, Delivered, Cancelled
+    initial Draft
+    transition submit  Draft          -> PendingPayment by Customer covers REQ-ORDER-001 "顧客が注文を送信する"
+    transition pay     PendingPayment -> Paid           by Customer covers REQ-ORDER-002 "支払いで注文が確定する"
+    transition timeout PendingPayment -> Cancelled      by System   covers REQ-ORDER-003 "未払いのまま期限切れで取消"
+    transition cancel  PendingPayment -> Cancelled      by Customer covers REQ-ORDER-004 "支払前は顧客が取消できる"
+    // 仕込んだ欠陥: 2026-09-14 の定例で「再決済を受け付ける」となり追加。下の FB-ORDER-002 と矛盾する
+    @reqmap.event("pay")
+    transition repay   Paid           -> Paid           by Customer covers REQ-ORDER-008 "支払済みでも再決済を受け付ける（2026-09-14 追加）"
+    transition accept  Paid           -> Preparing      by Shop     covers REQ-ORDER-005 "店舗が受注して調理に入る"
+    transition ship    Preparing      -> ReadyForPickup by Shop     covers REQ-ORDER-006 "調理完了で受取可能"
+    transition deliver ReadyForPickup -> Delivered      by Shop     covers REQ-ORDER-007 "受渡しで完了"
+    // 仕込んだ欠陥: 未決定の理由に論点IDが無い（本来は @undecided("Q-006 ...")）
+    @reqmap.event("cancel")
+    @undecided("支払後のキャンセルで返金するかは未定")
+    transition cancel_paid Paid       -> Cancelled      by Customer covers REQ-ORDER-009 "支払後のキャンセル"
+  }
+
+  // Q-007（二重送信・二重決済）が決まったときに書いた主張
+  forbidden FB-ORDER-001 "送信済み注文の再送信は拒否される" {
+    submit(0) submit(0)
+    expect rejected
+  }
+  forbidden FB-ORDER-002 "支払済み注文への再決済は拒否される" {
+    submit(0) pay(0) repay(0)
+    expect rejected
+  }
+  acceptance AC-ORDER-001 "正常系: 送信→支払→受注→調理→受渡" {
+    submit(0) pay(0) accept(0) ship(0) deliver(0)
+    expect Order 0 in Delivered
+  }
+
+  terminal { forall c: Order { stage(c) == Delivered or stage(c) == Cancelled } }
+}
+verify {
+  instances Order = 2
+}

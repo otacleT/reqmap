@@ -19,7 +19,9 @@ DEFAULTS = {
     "milestone": "", "questions_dir": "questions", "models_dir": "models",
     "out_dir": ".reqmap", "max_prereqs": 2, "response_days_default": 14,
     "prereq_heading": "前提", "id_pattern": r"^[A-Za-z][\w.\-]*",
-    "decision_heading": "決まったこと", "design_dirs": [],
+    "decision_heading": "決まったこと",
+    "quote_min_chars": 12,   # これより短い引用は出所を特定できないとして human に回す
+    "fsl_depth": 8,          # fslc verify の探索深さ
 }
 
 
@@ -99,7 +101,7 @@ class Project:
                 "ask_by": d.get("ask_by") or "",
                 "lead_time_days": int(d.get("lead_time_days") or 0),
                 "response_days": d.get("response_days"),
-                "cells": d.get("cells") or [], "covers": d.get("covers") or [],
+                "cells": d.get("cells") or [],
                 "aliases": [str(a).strip() for a in (d.get("aliases") or [])],
                 "log": [],  # turns.parse で埋める（循環importを避けるため後段で）
                 "ledger": d.get("ledger") or "",

@@ -1,6 +1,6 @@
 ---
 description: まだ誰も気づいていない確認観点を洗い出す。網羅グリッドと状態遷移の穴から機械的に導出する
-argument-hint: [プロジェクトのパス] [絞り込み(grid/fsm/graph/assumption)]
+argument-hint: [プロジェクトのパス] [絞り込み(grid/fsl/graph/assumption/turn)]
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/reqmap-cli:*) Read
 ---
 
@@ -18,7 +18,11 @@ allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/reqmap-cli:*) Read
    **いま決まっていないこと → 決まらないと何が止まるか → 選択肢 → いつまでに欲しいか**
 3. 選ばなかったものは件数だけ伝える
 4. `grid.unlinked`（候補あり）は**推定**です。`cells:` を勝手に書かず、
-   「これで合っていますか」と確認してから書いてください
+   「これで合っていますか」と確認してから書いてください。
+5. `fsl.forbidden_accepted` と `fsl.stale_undecided` は件数に関わらず必ず伝えてください。
+   前者は**決定どうしの矛盾**（どちらが正しいかは人が決める）、後者は**決定が仕様に未反映**です。
+   `fsl.state_event_hole` への答えは、遷移・forbidden・@impossible のどれかで仕様に書きます
+   （`coverage-grids` スキル）。
 
 観点が明らかに的外れなら、グリッドの行・列が案件の実体と合っていません。
 `coverage-grids` スキルを読んで直してください。

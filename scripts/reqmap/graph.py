@@ -3,14 +3,16 @@
 
 依存は4種類。**上流を指す**（「これが先」）。
   blocks      本文の `## 前提`。決まらないと着手できない
-  derives     決まれば機械的に従属する
+  derives     決まれば機械的に従属する（聞くものではなく、書き取るもの）
   constrains  決定が選択肢を狭める（止めはしないが、変えると再検討が要る）
-  conflicts   両立しない
+  conflicts   両立しない（gaps.graph_checks が矛盾として出す。辺にはしない）
 
 影響度は2本立てにする。1本だと「変更時の波及」が見えない。
   blocks_count  いま何件を**止めている**か           … 決める順番を決める
   impact_count  変えたら何件の**再検討が要る**か     … 仕様変更が来たときに効く
 """
+import datetime as _dt
+
 from . import model, turns
 from .model import ACTIVE, DECIDED, DROPPED, SETTLED
 
@@ -56,7 +58,7 @@ def _closure(edges, start, kinds):
 
 
 def cycles(edges):
-    """blocks の循環。見つけた経路を返す。"""
+    """blocks / derives の循環。人に見せる用に、見つけた経路を返す。"""
     color, found = {}, []
 
     def dfs(u, path):
@@ -76,11 +78,50 @@ def cycles(edges):
     return found
 
 
+def scc_cycle_nodes(edges, kinds=("blocks", "derives")):
+    """循環に乗っている節の集合（Tarjan の強連結成分。大きさ2以上か自己ループ）。
+
+    cycles() が返す経路の和では足りない。DFS の back-edge から見つかる経路には、
+    交差辺だけで循環に参加している節が出てこないことがある。
+    ここで拾った節だけを初期値に落とし、**他の論点の計算は巻き込まない。**"""
+    index, low, stack, on, out, counter = {}, {}, [], set(), set(), [0]
+
+    def adj(u):
+        return [v for v, k in edges.get(u, []) if k in kinds]
+
+    def strong(u):
+        index[u] = low[u] = counter[0]
+        counter[0] += 1
+        stack.append(u)
+        on.add(u)
+        for v in adj(u):
+            if v not in index:
+                strong(v)
+                low[u] = min(low[u], low[v])
+            elif v in on:
+                low[u] = min(low[u], index[v])
+        if low[u] == index[u]:
+            comp = []
+            while True:
+                w = stack.pop()
+                on.discard(w)
+                comp.append(w)
+                if w == u:
+                    break
+            if len(comp) > 1 or u in adj(u):
+                out.update(comp)
+
+    for n in edges:
+        if n not in index:
+            strong(n)
+    return out
+
+
 def analyse(proj):
     """影響度・深さ・着手可否・逆算日付を計算する。ファイルには書かない。"""
     edges, dangling = build(proj)
     items = proj.items
-    has_cycle = bool(cycles(edges))
+    cyc = scc_cycle_nodes(edges)
     up_of = {i: [] for i in items}
     for u, outs in edges.items():
         for v, k in outs:
@@ -97,38 +138,49 @@ def analyse(proj):
         res[iid] = {"blocks_count": len(blocked), "blocking": bucket(len(blocked)),
                     "impact_count": len(impact), "downstream": sorted(blocked)}
 
-    # 深さ（前提の連なり）と着手可否
-    def depth(i, guard=()):
-        if i in guard or has_cycle:
+    # 深さ（前提の連なり）と着手可否。循環に乗っている節だけ 0 に落とす。
+    memo_d = {}
+
+    def depth(i):
+        if i in cyc:
             return 0
-        ups = [u for u, k in up_of[i] if k in ("blocks", "derives") and not settled(u)]
-        return 0 if not ups else 1 + max(depth(u, guard + (i,)) for u in ups)
+        if i not in memo_d:
+            ups = [u for u, k in up_of[i] if k in ("blocks", "derives") and not settled(u)]
+            memo_d[i] = 0 if not ups else 1 + max(depth(u) for u in ups)
+        return memo_d[i]
 
     for iid in items:
         ups = [u for u, k in up_of[iid] if k in ("blocks", "derives")]
         res[iid]["depth"] = depth(iid)
         res[iid]["ready"] = all(settled(u) for u in ups)
         res[iid]["waiting_on"] = sorted(u for u in ups if not settled(u))
+        # derives の上流を持つ論点は「聞く」ものではなく「書き取る」もの
+        res[iid]["derived"] = any(k == "derives" for _, k in up_of[iid])
 
-    # 逆算スケジュール: 下流より先に答えが要る
+    # 逆算スケジュール: 上流 i は、下流 v を**出す日**（need_by(v) − v の応答日数）より
+    # 自分の lead_time だけ前に決まっていなければならない。
+    # 引くのは**下流**の応答日数。上流自身の日数を引くと、上下で日数が違うとき
+    # 上流の期限が「下流を出す日」より後ろにずれて、下流が間に合わなくなる。
     ms = model.as_date(proj.cfg.get("milestone"))
+    memo_n = {}
 
-    def need_by(i, guard=()):
-        if i in guard or has_cycle:
-            return ms
+    def need_by(i):
         own = model.as_date(items[i]["due"]) or ms
+        if i in cyc:
+            return own
+        if i in memo_n:
+            return memo_n[i]
         cands = [own] if own else []
         for v, k in edges.get(i, []):
             if k == "conflicts" or settled(v):
                 continue
-            nb = need_by(v, guard + (i,))
+            nb = need_by(v)
             if nb:
-                cands.append(nb - __import__("datetime").timedelta(
-                    days=turns.resp_days(proj, items[i])[0]
-                         + items[i]["lead_time_days"]))
-        return min(cands) if cands else None
+                cands.append(nb - _dt.timedelta(
+                    days=turns.resp_days(proj, items[v])[0] + items[i]["lead_time_days"]))
+        memo_n[i] = min(cands) if cands else None
+        return memo_n[i]
 
-    import datetime as _dt
     for iid, it in items.items():
         nb = need_by(iid)
         res[iid]["need_by"] = nb.isoformat() if nb else ""
@@ -151,4 +203,4 @@ def analyse(proj):
         sev = RISK.get(it["severity"], RISK.get(proj.area_risk(it["area"]), 2.0))
         r["priority"] = round((1 + r["blocks_count"] + 0.25 * r["impact_count"]) * sev * urg, 1)
     return {"edges": edges, "up_of": up_of, "dangling": dangling,
-            "cycles": cycles(edges), "result": res}
+            "cycles": cycles(edges), "cycle_nodes": sorted(cyc), "result": res}

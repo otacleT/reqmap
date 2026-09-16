@@ -118,6 +118,16 @@ def classify(chg, proj, source_text, declared=None):
         # 改行位置の違いで止めない。日本語の議事録は常に折り返すため、
         # ここで毎回止めると使われなくなる（**煩わしさは正しさより早く効く**）。
         notes.append("引用は改行・記号のゆれを吸収して一致")
+    if kind != "none":
+        # 照合が守るのは「その一文が原文にある」ことだけ。短い・汎用的な一文は
+        # どんな title にも付けられる。出所を特定できない引用は blocked ではなく人に回す
+        # （存在はするので、モデルの作文とは限らない）。
+        q = _norm(chg.get("quote"))
+        mn = int(proj.cfg.get("quote_min_chars") or 0)
+        if mn and len(q) < mn:
+            raise_to(HUMAN, "引用が短く出所を特定できない（%d 文字。%d 文字以上にする）" % (len(q), mn))
+        if _norm(source_text).count(q) > 1:
+            raise_to(HUMAN, "引用が原文に複数回出現し、どの発言か特定できない")
 
     cid = str(chg.get("id", "")).strip()
     exists = proj.resolve(cid) if cid else None

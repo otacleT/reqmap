@@ -137,12 +137,8 @@ def build(root, args):
 
     # 前回見たときからの決定の変化。設計側の記帳は要らない。
     from . import decisions as _dc
-    snap = None
-    try:
-        snap = json.load(open(os.path.join(proj.root, proj.cfg["out_dir"],
-                                           "findings-seen.json"), encoding="utf-8"))
-    except Exception:
-        pass
+    from . import seen as _seen
+    snap = _seen.decisions_seen(proj)
     rew, add, gone = _dc.changed(proj, (snap or {}).get("decisions") or {})
     norm = lambda xs: [dict(x, t=x["title"], s=x["status"]) for x in xs]
     rew, add, gone = norm(rew), norm(add), norm(gone)
@@ -301,7 +297,7 @@ function lg(items){return `<div class="legend">`+items.map(x=>
 {
   const rows=D.ranked.map(r=>`<tr class="${D.crit.includes(r.id)?'crit':''}">
     <td><b>${esc(r.id)}</b><br><span style="color:var(--ink2)">${esc(r.title)}</span></td>
-    <td><span class="pill">${LAB[r.status]}</span>${r.ready?"":' <span class="pill">前提待ち</span>'}</td>
+    <td><span class="pill">${LAB[r.status]}</span>${r.ready?"":' <span class="pill">前提待ち</span>'}${r.derived?' <span class="pill" title="上流が決まれば機械的に従属する。聞くものではなく書き取るもの">従属</span>':''}</td>
     <td>${esc(r.owner||"—")}</td>
     <td class="n ${late(r.ask_by)?'late':''}">${esc(r.ask_by||"—")}</td>
     <td class="n">${esc(r.need_by||"—")}</td>
@@ -421,7 +417,7 @@ function lg(items){return `<div class="legend">`+items.map(x=>
   let html="";
   if(!D.since){
     html=`<div class="empty">まだ基準がありません。
-      <code>reqmap gaps --snapshot</code> を実行すると、次からここに差分が出ます。</div>`;
+      <code>reqmap changes --ack</code> を実行すると、次からここに差分が出ます。</div>`;
   }else{
     if(D.rewritten.length) html+=`<h3 style="font-size:14px;margin:18px 0 8px">
         中身が書き換わった決定 <span class="pill gap">${D.rewritten.length}</span></h3>
