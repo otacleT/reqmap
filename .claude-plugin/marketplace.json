@@ -1,0 +1,14 @@
+{
+  "name": "reqmap-local",
+  "owner": {
+    "name": "Taisei Miyabe"
+  },
+  "plugins": [
+    {
+      "name": "reqmap",
+      "source": "./",
+      "description": "要件定義ハーネス"
+    }
+  ],
+  "description": "要件定義ハーネス（reqmap）のローカルマーケットプレイス"
+}

@@ -1,0 +1,49 @@
+# reqmap — 要件定義ハーネスの設定
+#
+# ここと models/ を書き換えるだけで、どの案件でも使えます。
+# 論点そのもの（questions/）は案件固有、この仕組みは案件非依存。
+
+name: テイクアウト注文アプリ（サンプル）
+milestone: 2026-10-31          # この日までに要件を固める、という目標日。逆算の起点
+
+# ディレクトリ（変える必要はほぼありません）
+questions_dir: questions
+models_dir: models
+out_dir: .reqmap
+
+# 論点1ページあたりの前提の上限。超えると「論点が同居している」として警告します。
+# 2 を超えると分割したほうが早く進む、というのが実務上の経験則です。
+max_prereqs: 2
+
+# 質問を出してから回答が返るまでの日数。ask_by（いつ出すか）の逆算に使います。
+# **実測ではなく仮置きで構いません。** 実績が分かった論点から
+# frontmatter の response_days に書き足していけば、そこだけ精度が上がります。
+response_days_default: 14
+response_days:
+  クライアント: 14
+  自社: 0
+
+# 決定の本文が書かれる見出し。ここの中身から「決定の指紋」を取ります。
+decision_heading: 決まったこと
+
+# 本文で依存を書く見出し。Obsidian のグラフビューをそのまま依存グラフとして使えます。
+prereq_heading: 前提
+
+# frontmatter の status に日本語を使いたい場合の対応表。
+# 正規の値は open / investigating / provisional / decided / dropped の5つ。
+status_aliases:
+  未決: open
+  確認中: investigating
+  弊社案: provisional
+  仮決定: provisional
+  決定: decided
+  取下げ: dropped
+
+# 領域。「ID | 名前 | リスク(high/medium/low)」
+# リスクは観点の重み付けに使います。全部 high にすると意味がなくなります。
+areas:
+  - A-01 | 認証・認可 | high
+  - A-02 | データと個人情報 | high
+  - A-03 | 決済 | high
+  - A-04 | 注文フロー | medium
+  - A-05 | 運用 | low

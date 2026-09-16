@@ -1,0 +1,9 @@
+{
+  "name": "reqmap",
+  "displayName": "要件定義ハーネス",
+  "version": "0.1.0",
+  "description": "要件の全体像・未決定事項・依存関係を可視化し、決定論的なチェックで新しい確認観点を生む要件定義ハーネス",
+  "author": { "name": "Taisei Miyabe" },
+  "license": "MIT",
+  "keywords": ["requirements", "elicitation", "coverage", "fsl", "obsidian"]
+}

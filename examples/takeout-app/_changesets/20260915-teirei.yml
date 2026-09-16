@@ -1,0 +1,85 @@
+# 議事録から起こした論点の提案。reqmap review で点検してから reqmap apply で反映する。
+# **quote は原文からの引用。機械が原文と照合する。無い引用は blocked になり適用されない。**
+
+source: sources/20260915_定例.md
+extracted_at: 2026-09-15
+extracted_by: reqmap-extractor
+
+changes:
+  - op: create
+    id: data.deletion-grace-period
+    title: 削除依頼から実際の削除までの猶予期間
+    area: A-02
+    kind: question
+    status: open
+    owner: クライアント
+    severity: high
+    quote: そこはまだ決まっていません。法務にも確認が要ると思います。
+    prereqs: []
+    cells: lifecycle:user x hard_delete
+    note: 即時削除だと誤操作の取り消しができない。法務確認が要るとのことで、リードタイムが読めない。
+
+  - op: create
+    id: data.deletion-propagation-targets
+    title: 削除を伝播させる外部連携先の一覧
+    area: A-02
+    kind: question
+    status: open
+    owner: クライアント
+    severity: medium
+    quote: 次回までに整理してお送りします。
+    prereqs: []
+    cells: lifecycle:user x propagate
+    note: 連携先が確定しないと削除伝播の設計に入れない。
+
+  - op: create
+    id: errors.upload-network-loss
+    title: 画像アップロード中に通信が切れた場合の挙動
+    area: A-04
+    kind: question
+    status: open
+    owner: 自社
+    severity: medium
+    quote: 再送するのか、その場でエラーにするのか。
+    cells: errors:upload x offline
+    note: 自社提案が求められている。
+
+  - op: create
+    id: notify.email-fallback
+    title: 注文ステータス通知にメールを併用するか
+    area: A-04
+    kind: question
+    status: open
+    owner: クライアント
+    severity: medium
+    quote: LINEだけだと見落とす方がいるのでメールも併用したいという話が出ています
+    prereqs: []
+    note: クライアント社内で検討中。来週回答予定。
+
+  - op: create
+    id: ops.withdrawal-screen
+    title: 退会画面を設けず問い合わせ経由で受け付ける
+    area: A-05
+    kind: question
+    status: decided
+    owner: クライアント
+    severity: medium
+    quote: 退会画面は作らない方針でいこうと思います。
+    note: 決定として起こしたいが、機械は決定を書かない想定。
+
+  - op: update
+    id: Q-004
+    title: 決済プロバイダをStripeにするか
+    quote: 加盟店審査がまだ経理を通っていません。来週中には回答できると思います。
+    note: 期限を 2026-09-22 に更新したい。
+
+  - op: create
+    id: payment.refund-api-difference
+    title: GMOに切り替えた場合の返金API差分の影響範囲
+    area: A-03
+    kind: question
+    status: open
+    owner: 自社
+    severity: high
+    quote: GMOの返金APIは仕様が全く異なるため全面的な再実装が必要です
+    note: この引用は原文に存在しない（幻覚のテスト用）。
