@@ -42,6 +42,19 @@ quote_min_chars: 12
 # fslc verify の探索深さ。models/fsl/*.fsl の検証に使います。fslc が無ければ省略されます。
 fsl_depth: 8
 
+# `reqmap ci` が exit 1 にする check（CI で PR を止める用）。既定は「矛盾」と「読めていない」だけ。
+# 観点の多さでは止めません。差し替えるならコメントを外して並べてください。
+# ci_gate:
+#   - fsl.forbidden_accepted
+#   - fsl.acceptance_failed
+#   - fsl.violated
+#   - fsl.seam_broken
+#   - fsl.spec_error
+#   - fsl.legacy_format
+#   - graph.conflict
+#   - graph.cycle
+#   - rule.duplicate_id
+
 # 決定の本文が書かれる見出し。ここの中身から「決定の指紋」を取ります。
 # 決定日ではなく中身から取るのが要点で、
 # 「決定日はそのままで結論だけ直す」が実務では普通に起きるためです。

@@ -112,6 +112,9 @@ fslc が `fsl.forbidden_accepted` として検出します。まだ決まって�
 出てきた観点を見て「この行いらない」「この行が抜けてる」を直すのが早いです。
 最初から完璧を狙わないでください。
 
+追いかけると決めた観点は、`reqmap gaps --file <観点ID>` で論点ページにします。
+open のまま作られ、`cells:` で紐付くので穴から消えます。owner と前提は人が書き足します。
+
 ---
 
 ## 2. 毎日 — 2分
@@ -144,6 +147,7 @@ fslc が `fsl.forbidden_accepted` として検出します。まだ決まって�
 `severity: high` と、止めている件数の多いものから **3件だけ**選びます。
 全部を並べないでください。**100件の観点より「今週決めないと止まる3件」です。**
 
+選んだ3件は `reqmap show <id>` で前提・下流・日付・やりとりを確かめてから質問文にします。
 私に頼めば、機械が組んだ文を相手に出せる日本語にします。組み立て方は決まっています。
 
 > いま決まっていないこと → 決まらないと何が止まるか → 選択肢 → いつまでに欲しいか
@@ -185,6 +189,7 @@ fslc が `fsl.forbidden_accepted` として検出します。まだ決まって�
 
 状態遷移に関わる決定なら `models/fsl/*.fsl` にも写します（遷移・`forbidden`・`when`）。
 写さないと、その決定はいつまでも自由文のままで、後から来る矛盾は誰にも見えません。
+写し忘れは `fsl.spec_behind_decision` が拾います（`log:` の `decided` 日付より仕様が古いとき）。
 
 ### 4-3. やりとりを記録する
 
@@ -224,6 +229,9 @@ reqmap changes --ack    # 決定を「ここまで見た」と記録する（毎
 設計中に「これ決まってない」に遭遇したら、要件側に論点を足してください。
 Change Set を書いてもいいし、手で `questions/` にファイルを作っても構いません。
 
+`reqmap ci` を CI に入れると、決定どうしの矛盾（`fsl.forbidden_accepted`・`graph.conflict`）と
+読めない仕様で PR が止まります。観点の多さでは止めません。
+
 ---
 
 ## 6. 詰まったとき
@@ -240,6 +248,8 @@ Change Set を書いてもいいし、手で `questions/` にファイルを作�
 | `fsl.spec_error` が出る | 仕様が fslc で読めていない。`doctor` の行番号を見て直す |
 | `fsl.forbidden_accepted` が出る | 後から足した遷移が前の決定と矛盾している。**どちらが正しいかは人が決める** |
 | `fsl.tool_missing` が出る | fslc が入っていない。0 章のインストールを |
+| `fsl.thin_spec` が出る | forbidden も acceptance も無い。拒否すると決めたマスを forbidden に写す |
+| `fsl.spec_behind_decision` が出る | 決定のほうが仕様より新しい。仕様に写すか、写し済みなら保存・コミット |
 
 グリッドと FSL の reqmap 向け指令を触るときは `coverage-grids` スキル、
 FSL 仕様そのものは fslc 同梱の `fsl-requirements` スキルを読んでください。
@@ -257,6 +267,7 @@ FSL 仕様そのものは fslc 同梱の `fsl-requirements` スキルを読ん�
 | `/reqmap-changes` | 書き換わった決定 |
 | `/reqmap-status` | 動くものがあるか |
 | `/reqmap-gaps` | 確認観点。3件に絞って質問文にしてくれる |
+| `/reqmap-show <id>` | 1論点の全部。質問文の材料 |
 | `/reqmap-extract <議事録>` | 議事録→論点（引用の原文照合つき） |
 | `/reqmap-recalc` | 影響度と期日の再計算 |
 | `/reqmap-view` | HTML |
@@ -271,6 +282,9 @@ FSL 仕様そのものは fslc 同梱の `fsl-requirements` スキルを読ん�
 | `reqmap changes --ack` | 自分の基準のみ（`.reqmap/`） |
 | `reqmap status` | なし |
 | `reqmap gaps [--new] [--snapshot]` | `--snapshot` のみ |
+| `reqmap gaps --file <観点ID,...>` | あり（open な論点ページを作るだけ） |
+| `reqmap show <id>` | なし |
+| `reqmap ci` | なし（exit 1 で止めるだけ） |
 | `reqmap recalc [--check]` | `--check` 以外はあり（計算済み7キーだけ） |
 | `reqmap review` | なし |
 | `reqmap apply [--approve=<id>]` | あり |

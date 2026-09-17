@@ -22,6 +22,10 @@ DEFAULTS = {
     "decision_heading": "決まったこと",
     "quote_min_chars": 12,   # これより短い引用は出所を特定できないとして human に回す
     "fsl_depth": 8,          # fslc verify の探索深さ
+    # `reqmap ci` が exit 1 にする check。矛盾と「読めていない」だけ。観点の多さでは止めない
+    "ci_gate": ["fsl.forbidden_accepted", "fsl.acceptance_failed", "fsl.violated",
+                "fsl.seam_broken", "fsl.spec_error", "fsl.legacy_format",
+                "graph.conflict", "graph.cycle", "rule.duplicate_id"],
 }
 
 

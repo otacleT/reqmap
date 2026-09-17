@@ -11,6 +11,7 @@ JS は hover とタブ切り替えだけ。
   決定の変化     前回見たときから書き換わった決定。各自が自分の設計に効くか判断する
   依存の地図     層別DAG。左が先、右が後。構造を見る
   網羅グリッド   1マス1観点のヒートマップ。**空白＝インクが無い**。俯瞰はこれが一番効く
+  状態×イベント  仕様（models/fsl）の穴。読み方はグリッドと同じ。forbidden は「拒否と決めて検証済み」
   領域別の進捗   積み上げ棒。未決の質量がどこにあるか
 
 3Dの力学グラフは採らない。Z軸に意味を持たせられないなら、読めなくなるだけで情報は増えない。
@@ -145,7 +146,11 @@ def build(root, args):
     tracked = [{"id": i, "t": proj.items[i]["title"], "s": proj.items[i]["raw_status"],
                 "h": h} for i, h in sorted(_dc.snapshot(proj).items())]
 
+    matrices = [dict(m, file=s["file"], verify=s["verify"])
+                for s in out["fsl"] for m in (s.get("matrices") or [])]
+
     payload = {"rewritten": rew, "added": add, "gone": gone, "tracked": tracked,
+               "matrices": matrices,
                "since": (snap or {}).get("at", ""),
                "project": proj.cfg.get("name") or os.path.basename(proj.root),
                "milestone": str(proj.cfg.get("milestone") or ""),
@@ -260,6 +265,7 @@ code{font-size:12px;background:var(--plane);padding:1px 4px;border-radius:4px}
   <div class="panel" id="p2"></div>
   <div class="panel" id="p3"></div>
   <div class="panel" id="p4"></div>
+  <div class="panel" id="p5"></div>
 </div>
 <div id="tip"></div>
 <script>
@@ -275,7 +281,7 @@ document.getElementById("sub").innerHTML=
   `論点 <b>${D.counts.items}</b> 件（未決 <b>${D.counts.open}</b>）・確認観点 <b>${D.counts.findings}</b> 件`
   +(D.milestone?` ・ 目標 <b>${esc(D.milestone)}</b>`:"")+` ・ ${esc(D.generated)} 時点`;
 
-const TABS=["次に決める順","依存の地図","網羅グリッド","領域別の進捗","決定の変化"];
+const TABS=["次に決める順","依存の地図","網羅グリッド","状態×イベント","領域別の進捗","決定の変化"];
 const tb=document.getElementById("tabs");
 TABS.forEach((t,i)=>{const b=document.createElement("button");b.textContent=t;
   b.setAttribute("role","tab");b.setAttribute("aria-selected",i===0);
@@ -384,7 +390,45 @@ function lg(items){return `<div class="legend">`+items.map(x=>
      ${el.dataset.n?"<br>候補: "+esc(el.dataset.n):""}`));
 }
 
-/* 4 ─ 領域別の進捗 ─────────────────────────────────────── */
+/* 4 ─ 状態×イベント（models/fsl の穴） ───────────────────── */
+{
+  const FILL={defined:"var(--s-decided)",forbidden:"var(--s-provisional)",impossible:"var(--grid)",
+              linked:"var(--s-open)",hole:"transparent",suppressed:"transparent",
+              terminal:"transparent",unused:"transparent"};
+  const BD={defined:"1px solid var(--border)",forbidden:"1px solid var(--border)",
+            impossible:"1px solid var(--border)",linked:"1px solid var(--border)",
+            hole:"1px dashed var(--axis)",suppressed:"1px dotted var(--grid)",
+            terminal:"0",unused:"1px dashed var(--axis)"};
+  const N={defined:"遷移あり",forbidden:"forbidden で拒否（検証済み）",
+           impossible:"@impossible（起こり得ないと記録）",linked:"起票済み（cells: で紐付け）",
+           hole:"穴。候補の論点すら無い",suppressed:"遠いマス（隣接ではない）",
+           terminal:"終端（出る遷移が無い）",unused:"どの状態にも遷移が無いイベント"};
+  const html=D.matrices.map(m=>{
+    const head=`<tr><th></th>`+m.events.map(e=>
+      `<th class="rot" title="${esc(e)}"><span>${esc(e)}</span></th>`).join("")+`</tr>`;
+    const body=m.rows.map(r=>`<tr><td class="rl">${esc(r.stage)}</td>`+
+      r.cells.map(c=>`<td><span class="gcell" data-t="${esc(r.stage)} × ${esc(c.e)}"
+        data-s="${c.s}" data-n="${esc(c.n)}"
+        style="background:${FILL[c.s]};border:${BD[c.s]}"></span></td>`).join("")+`</tr>`).join("");
+    const n=m.rows.reduce((a,r)=>a+r.cells.filter(c=>c.s==="hole").length,0);
+    return `<h3 style="font-size:14px;margin:24px 0 8px">${esc(m.model)}
+      <span class="pill">${esc(m.file)}</span> <span class="pill">検証 ${esc(m.verify)}</span>
+      <span class="pill gap">穴 ${n}</span></h3>
+      <div class="scroll"><table class="gt">${head}${body}</table></div>`;
+  }).join("");
+  document.getElementById("p3").innerHTML=
+    `<p class="cap"><b>行が状態、列がイベント。</b>読み方は網羅グリッドと同じで、破線の枠が穴です。
+      濃い青は遷移あり、中間の青は「拒否すると決めて forbidden に書いた」マス（検証済み）。
+      点線は隣接ではない遠いマスで、問うていません（@critical にすると全状態で問います）。</p>`
+    +lg([{c:"var(--s-decided)",l:"遷移あり"},{c:"var(--s-provisional)",l:"forbidden（検証済み）"},
+         {c:"var(--s-open)",l:"起票済み"},{c:"var(--grid)",l:"@impossible"},
+         {c:"transparent",l:"穴（破線）／遠いマス（点線）"}])
+    +(html||'<div class="empty">仕様がありません。models/fsl/ に fslc の requirements 方言で置いてください。</div>');
+  document.querySelectorAll("#p3 .gcell").forEach(el=>hook(el,
+    `<b>${esc(el.dataset.t)}</b>${N[el.dataset.s]}${el.dataset.n?"<br>"+esc(el.dataset.n):""}`));
+}
+
+/* 5 ─ 領域別の進捗 ─────────────────────────────────────── */
 {
   const max=Math.max(1,...D.areas.map(a=>ORDER.reduce((s,k)=>s+a.counts[k],0)));
   const rows=D.areas.map(a=>{
@@ -400,17 +444,17 @@ function lg(items){return `<div class="legend">`+items.map(x=>
       <td style="width:62%">${segs}</td>
       <td class="n">${a.counts.decided}/${tot}</td><td class="n">${un}</td></tr>`;
   }).join("");
-  document.getElementById("p3").innerHTML=
+  document.getElementById("p4").innerHTML=
     `<p class="cap">未決の多い順。<b>棒の長さは論点の件数</b>で、色が濃いほど決着しています。
       どこに未決の質量が溜まっているかを見るためのビューです。</p>`
     +lg(ORDER.map(s=>({c:col(s),l:LAB[s]})))
     +`<div class="scroll"><table><thead><tr><th>領域</th><th></th>
       <th>決定/件数</th><th>未決</th></tr></thead><tbody>${rows||
       '<tr><td colspan="4" class="empty">領域が設定されていません。</td></tr>'}</tbody></table></div>`;
-  document.querySelectorAll("#p3 [data-t]").forEach(el=>hook(el,`<b>${esc(el.dataset.t)}</b>`));
+  document.querySelectorAll("#p4 [data-t]").forEach(el=>hook(el,`<b>${esc(el.dataset.t)}</b>`));
 }
 
-/* 5 ─ 決定の変化 ─────────────────────────────────────── */
+/* 6 ─ 決定の変化 ─────────────────────────────────────── */
 {
   const row=(x,chip)=>`<tr><td style="white-space:nowrap"><b>${esc(x.id)}</b></td>
     <td>${esc(x.t)} <span class="chip">${esc(x.s)}</span>${chip||""}</td></tr>`;
@@ -438,7 +482,7 @@ function lg(items){return `<div class="legend">`+items.map(x=>
        <td>${esc(x.t)} <span class="chip">${esc(x.s)}</span></td>
        <td class="n" style="color:var(--muted);font-size:11px">${esc(x.h)}</td></tr>`
     ).join("")+`</tbody></table>`;
-  document.getElementById("p4").innerHTML=
+  document.getElementById("p5").innerHTML=
     `<p class="cap">前回あなたが見たときから<b>中身が書き換わった決定</b>です。
       指紋は status と「決まったこと」の本文から取っているので、
       <b>決定日をそのままに結論だけ直した場合も出ます</b>。

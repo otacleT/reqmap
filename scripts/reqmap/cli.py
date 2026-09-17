@@ -7,6 +7,8 @@
     reqmap gaps            確認観点を出す（何も書かない）
     reqmap gaps --new      前回見たときから新しく出たものだけ
     reqmap gaps --snapshot 「ここまでは見た」を記録する（--new の基準になる）
+    reqmap gaps --file <観点ID,...>  観点から open な論点ページを起票する（cells: で紐付く）
+    reqmap show <id>       1論点の全部（前提・下流・日付・やりとり・仕様側の関連・観点）
     reqmap doctor          この vault をちゃんと読めているかを点検する
     reqmap status          静かな点検。人が動くものだけを出す
     reqmap view            HTML を出力する
@@ -16,6 +18,7 @@
     reqmap review          Change Set を点検する（引用照合とゲート分類。**何も書かない**）
     reqmap apply           Change Set のうち auto のものを適用する
     reqmap apply --approve <id,...>   human のものを名指しで適用する
+    reqmap ci              矛盾と「読めていない」があれば exit 1（CI で PR を止める用。何も書かない）
 
 ■ 書き込みの約束
 
@@ -28,10 +31,11 @@ recalc が書くのは frontmatter の**計算済み7キーだけ**。
 import datetime
 import json
 import os
+import re
 import shutil
 import sys
 
-from . import changeset, decisions, fm, fsl, gaps, graph, model, seen, turns
+from . import changeset, decisions, filing, fm, fsl, gaps, graph, model, seen, turns
 from .model import ACTIVE, DECIDED, DROPPED, PROVISIONAL, SETTLED
 
 WRITE_KEYS = ("blocks_count", "blocking", "impact_count", "ready", "depth",
@@ -120,6 +124,9 @@ def cmd_gaps(root, args):
     only = [a for a in args if not a.startswith("--")]
     F = [f for f in out["findings"] if not only or any(o in f["check"] for o in only)]
 
+    files = [a.split("=", 1)[1] for a in args if a.startswith("--file=")]
+    if files:
+        return _file_findings(proj, out, [x.strip() for x in ",".join(files).split(",") if x.strip()])
     base = seen.findings_seen(proj)
     seen_ids = base["ids"] if base else None
     if "--snapshot" in args:
@@ -169,6 +176,125 @@ def cmd_gaps(root, args):
             print("  [%-6s] %s" % (f["severity"], f["question"]))
         if len(rows) > cap:
             print("  … 他 %d 件" % (len(rows) - cap))
+    return 0
+
+
+def _file_findings(proj, out, ids):
+    """観点から論点ページを起票する。書くのは open な論点だけ。"""
+    by_id = {f["id"]: f for f in out["findings"]}
+    bad, taken = 0, set()
+    for fid in ids:
+        f = by_id.get(fid)
+        if not f:
+            print("  見つかりません  %s（gaps の一覧に出る ID を写してください）" % fid)
+            bad += 1
+            continue
+        if not filing.fileable(f):
+            print("  起票しない  %s（%s）は論点ではありません。既存ページや規約についての指摘です。"
+                  % (fid, f["check"]))
+            bad += 1
+            continue
+        p = filing.plan(proj, f)
+        if not p:
+            print("  起票しない  %s の元になるグリッド／仕様が見つかりません" % fid)
+            bad += 1
+            continue
+        path, err = filing.write(proj, p, model.today(), taken)
+        if err:
+            print("  見送り  %s  %s" % (fid, err))
+            bad += 1
+            continue
+        taken.add(p["id"])
+        print("  起票  %s  %s" % (p["id"], path))
+        if p["hint"]:
+            print("        仕様の @undecided の先頭にこの ID を書いてください: %s" % p["hint"])
+    if len(taken):
+        print("\n起票 %d 件。owner と前提を書き足してから reqmap recalc を実行してください。" % len(taken))
+    return 1 if bad else 0
+
+
+# ── show（1論点の全部） ──────────────────────────────────────
+def cmd_show(root, args):
+    """1論点について機械が知っている事実を全部出す。定例前の下調べと、質問文の材料。"""
+    proj = model.Project(root)
+    ref = " ".join(a for a in args if not a.startswith("--")).strip()
+    iid = proj.resolve(ref) if ref else None
+    if not iid:
+        print("見つかりません: %s" % (ref or "（ID を指定してください）"))
+        return 1
+    it = proj.items[iid]
+    out = gaps.run(proj)
+    an, res = out["analysis"], out["analysis"]["result"]
+    r = res[iid]
+    st = lambda i: proj.items[i]["raw_status"] or proj.items[i]["status"]
+    L = ["# %s  %s" % (iid, it["title"]),
+         "  %s / %s / 領域 %s / 相手 %s / 重要度 %s / %s"
+         % (it["kind"], st(iid), it["area"] or "—", it["owner"] or "—", it["severity"], it["file"]),
+         "■ 日付と影響度",
+         "  出す %s  回答が要る %s  応答日数 %d 日（%s）  止めてる %d  変えたら再検討 %d  深さ %d  優先度 %s%s"
+         % (r["ask_by"] or "—", r["need_by"] or "—", r["resp_days"], r["resp_source"],
+            r["blocks_count"], r["impact_count"], r["depth"], r["priority"],
+            "" if r["ready"] else "  ※前提待ち")]
+    L.append("■ 前提（これが先）")
+    ups, bad = proj.prereqs(it)
+    for u in ups:
+        L.append("  blocks      %s  [%s] %s" % (u, st(u), proj.items[u]["title"]))
+    for b in bad:
+        L.append("  blocks      %s  （未解決の参照）" % b)
+    for kind in ("derives", "constrains", "conflicts"):
+        for ref_ in it["typed"][kind]:
+            u = proj.resolve(ref_)
+            L.append("  %-11s %s  %s" % (kind, u or ref_,
+                                         "[%s] %s" % (st(u), proj.items[u]["title"]) if u else "（未解決の参照）"))
+    if len(L) == 5:
+        L.append("  なし")
+    L.append("■ 下流（これを待っている）")
+    downs = an["edges"].get(iid, [])
+    for v, k in sorted(downs, key=lambda x: (x[1], x[0])):
+        L.append("  %-11s %s  [%s] %s" % (k, v, st(v), proj.items[v]["title"]))
+    if not downs:
+        L.append("  なし")
+    L.append("■ 紐付け（cells）")
+    L += ["  %s" % c for c in it["cells"]] or ["  なし"]
+    m = turns.metrics(it)
+    L.append("■ やりとり（log）  出した %d 回 / 返答 %d 回 / ひっくり返り %d 回 / 実測 %s%s"
+             % (m["ask_count"], m["answer_count"], m["reopen_count"],
+                ("%d 日" % m["measured_days"]) if m["measured_days"] is not None else "なし",
+                (" / 返事待ち %d 日" % m["waiting_days"]) if m["waiting_days"] is not None else ""))
+    for e in it["log"]:
+        L.append("  %s %s%s" % (e["date"] or "?", e["kind"] or "（読めない行）",
+                                (" | " + e["note"]) if e["note"] else ""))
+    if not it["log"]:
+        L.append("  なし")
+    a = it["assumption"] or {}
+    if a:
+        L.append("■ 仮置き")
+        L.append("  %s  期限 %s  検証 %s  影響 %s" % (a.get("text") or "", a.get("expires") or "—",
+                                                    a.get("validate_by") or "—", a.get("impact") or "—"))
+    rel_spec = []
+    for sp in fsl.load_specs(proj):
+        if any(proj.resolve(x) == iid for x in sp["src"]["depends_on"]):
+            rel_spec.append("  %s  @depends_on" % sp["file"])
+        for u in sp["src"]["undecided"]:
+            if fsl._ref(proj, u["reason"]) == iid:
+                rel_spec.append("  %s  %s（%d 行）@undecided" % (sp["file"], u["decl"], u["line"]))
+    if rel_spec:
+        L.append("■ 仕様側の関連")
+        L += rel_spec
+    mine = [f for f in out["findings"]
+            if iid in (f["target"].get("item"), f["target"].get("upstream"), f["target"].get("pending"),
+                       f["target"].get("decided")) or iid in (f["target"].get("items") or [])
+            or iid in f["blocks"]]
+    L.append("■ 観点（この論点に関するもの） %d 件" % len(mine))
+    for f in mine[:12]:
+        L.append("  [%-6s] %-26s %s" % (f["severity"], f["check"], f["question"][:90]))
+    if not mine:
+        L.append("  なし")
+    for head in ("論点", proj.cfg.get("decision_heading", "決まったこと")):
+        body = re.sub(r"<!--.*?-->", "", fm.section(it["body"], head), flags=re.S).strip()
+        L.append("■ %s" % head)
+        L += ["  " + x for x in body.splitlines() if x.strip()] or ["  （空）"]
+    print("\n".join(L))
     return 0
 
 
@@ -430,6 +556,32 @@ def _jsonable(o):
     return str(o)
 
 
+# ── ci（PR を止める） ────────────────────────────────────────
+def cmd_ci(root, args):
+    """ゲートに当たる観点があれば exit 1。**観点の多さでは止めない。** 止めるのは矛盾と「読めていない」。
+
+    仕様があるのに fslc が無いのも NG にする。黙って省略すると、通ったように見えて
+    状態遷移は何も検査されていない。--allow-missing-fslc で許せる。"""
+    proj = model.Project(root)
+    out = gaps.run(proj)
+    gate = set(proj.cfg.get("ci_gate") or [])
+    if "--allow-missing-fslc" not in args:
+        gate.add("fsl.tool_missing")
+    ng = [f for f in out["findings"] if f["check"] in gate]
+    name = proj.cfg.get("name") or os.path.basename(proj.root)
+    print("# CI ゲート  %s  (%s)" % (name, out["generated_at"]))
+    if not ng:
+        print("  通過。観点は %d 件あります（reqmap gaps で）。" % len(out["findings"]))
+        return 0
+    for f in ng:
+        print("  NG  %-24s %s" % (f["check"], f["question"][:110]))
+    by = {}
+    for f in ng:
+        by[f["check"]] = by.get(f["check"], 0) + 1
+    print("\nゲート NG %d 件（%s）" % (len(ng), " / ".join("%s %d" % kv for kv in sorted(by.items()))))
+    return 1
+
+
 def cmd_json(root, args):
     proj = model.Project(root)
     out = gaps.run(proj)
@@ -550,7 +702,7 @@ def cmd_apply(root, args):
     return 0
 
 
-CMDS = {"init": cmd_init, "review": cmd_review, "apply": cmd_apply,
+CMDS = {"init": cmd_init, "review": cmd_review, "apply": cmd_apply, "ci": cmd_ci, "show": cmd_show,
         "doctor": cmd_doctor, "changes": cmd_changes, "recalc": cmd_recalc, "gaps": cmd_gaps,
         "status": cmd_status, "view": cmd_view, "json": cmd_json}
 

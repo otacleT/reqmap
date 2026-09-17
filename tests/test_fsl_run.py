@@ -106,6 +106,49 @@ class RunTest(unittest.TestCase):
             spec(tmp, BASE % {"extra": '@undecided("返金条件が未定")\n    ' + REFUND, "last": "pay"})
             self.assertIn("fsl.undecided_unlinked", checks(tmp))
 
+    def test_spec_without_forbidden_or_acceptance_is_thin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(tmp)
+            thin = (BASE % {"extra": "", "last": "pay"})
+            thin = thin[:thin.index("  forbidden")] + thin[thin.index("  terminal"):]
+            spec(tmp, thin)
+            self.assertIn("fsl.thin_spec", checks(tmp))
+
+    def test_spec_with_forbidden_is_not_thin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(tmp)
+            spec(tmp, BASE % {"extra": "", "last": "pay"})
+            self.assertNotIn("fsl.thin_spec", checks(tmp))
+
+    def _behind(self, tmp, log, spec_mtime):
+        import datetime
+        page(tmp, "Q-006", "キャンセル", status="decided", decision="返金する。", log=log)
+        spec(tmp, "// @depends_on: Q-006\n" + BASE % {"extra": "", "last": "pay"})
+        if spec_mtime:
+            ts = datetime.datetime.combine(spec_mtime, datetime.time()).timestamp()
+            os.utime(os.path.join(tmp, "models", "fsl", "order.fsl"), (ts, ts))
+        return checks(tmp)
+
+    def test_decision_newer_than_spec_is_flagged(self):
+        import datetime
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(tmp)
+            cs = self._behind(tmp, ["2026-09-10 decided"], datetime.date(2026, 9, 1))
+            self.assertIn("fsl.spec_behind_decision", cs)
+
+    def test_spec_touched_after_decision_is_fine(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(tmp)
+            cs = self._behind(tmp, ["2026-09-10 decided"], None)   # いま書いた＝決定より新しい
+            self.assertNotIn("fsl.spec_behind_decision", cs)
+
+    def test_decision_without_typed_date_is_not_judged(self):
+        import datetime
+        with tempfile.TemporaryDirectory() as tmp:
+            make_vault(tmp)
+            cs = self._behind(tmp, [], datetime.date(2026, 9, 1))
+            self.assertNotIn("fsl.spec_behind_decision", cs)
+
     def test_legacy_jssm_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             make_vault(tmp)

@@ -107,6 +107,8 @@ verify { instances Order = 2 }
 | `fsl.forbidden_accepted` | fslc | 後から足した遷移が、前に書いた禁止経路を破っている（決定どうしの矛盾） |
 | `fsl.dead_end` / `fsl.dead_action` / `fsl.unreachable_stage` | fslc | 行き止まり／起きない遷移／到達しない状態 |
 | `fsl.stale_undecided` / `fsl.undecided_unlinked` | reqmap（注釈） | 論点は決まったのに仕様が古い／未決定なのに起票されていない |
+| `fsl.spec_behind_decision` | reqmap（log と更新日） | 紐付いた論点の決定日より仕様が古い（写し忘れ） |
+| `fsl.thin_spec` | reqmap | forbidden も acceptance も無く、決定を写しても矛盾が出ない |
 
 状態×イベントは**全マス総当たりにしない**。総当たりは `Draft × deliver`（未送信の注文を受け渡す）
 のような無意味セルで埋まる。「そのイベントが定義済みの状態の**隣**」だけを問い、遠いセルは件数のみ記録する。
@@ -122,6 +124,7 @@ verify { instances Order = 2 }
 | 拒否する | `forbidden` に操作列を書く | される。後から破られれば `fsl.forbidden_accepted` |
 | 起こり得ない | `// @impossible: State x event | 理由` | されない。**判断の記録**として理由を必ず書く |
 | まだ決められない | `@undecided("Q-xxx 理由")` を遷移の前に | 論点が決まったのに残っていれば `fsl.stale_undecided` |
+| 相手に聞く | `reqmap gaps --file <観点ID>` で論点に | 起票済み（cells: で紐付け）として表から消える |
 
 `forbidden` の最終ステップが当たるマスは「回答済み」として表から消える。`@impossible` も同じだが、
 こちらは検証されないので、後から仕様が変わっても気づけない。迷ったら `forbidden`。

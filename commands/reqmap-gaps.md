@@ -19,7 +19,10 @@ allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/reqmap-cli:*) Read
 3. 選ばなかったものは件数だけ伝える
 4. `grid.unlinked`（候補あり）は**推定**です。`cells:` を勝手に書かず、
    「これで合っていますか」と確認してから書いてください。
-5. `fsl.forbidden_accepted` と `fsl.stale_undecided` は件数に関わらず必ず伝えてください。
+5. 追いかけると決めた観点は `reqmap gaps --file=<観点ID,...> --root=${1:-.}` で論点ページにします。
+   **あなたが questions/ に書かないこと。** 機械が open のまま作り、cells: で紐付けます。
+   起票したら owner と前提を人に聞いて書き足し、`reqmap recalc` を実行します。
+6. `fsl.forbidden_accepted` と `fsl.stale_undecided` は件数に関わらず必ず伝えてください。
    前者は**決定どうしの矛盾**（どちらが正しいかは人が決める）、後者は**決定が仕様に未反映**です。
    `fsl.state_event_hole` への答えは、遷移・forbidden・@impossible のどれかで仕様に書きます
    （`coverage-grids` スキル）。

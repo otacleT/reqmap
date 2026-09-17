@@ -54,6 +54,11 @@ class SourceTest(unittest.TestCase):
         self.assertEqual(s["forbidden"][0]["steps"], [("pay", "0")])
         self.assertEqual(s["forbidden"][0]["last"], ("pay", "0"))
 
+    def test_acceptance_ids_are_read(self):
+        s = fsl.read_source(SPEC + '\nacceptance AC-1 "正常系" {\n  pay(0)\n  expect Order 0 in Paid\n}\n')
+        self.assertEqual(s["acceptance"], ["AC-1"])
+        self.assertEqual(fsl.read_source(SPEC)["acceptance"], [])
+
     def test_legacy_jssm_is_detected(self):
         self.assertTrue(fsl.read_source("machine_name: x;\na 'e' -> b;\n")["legacy"])
 

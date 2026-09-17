@@ -79,11 +79,23 @@ def _row_ctx(rwords, items, area):
             and any(w in it["title"] for w in rwords)]
 
 
+def claimed_by(proj):
+    """cells: で紐付いたマス → 論点ID。**取下げページの分は数えない**（数えると穴が永久に消える）。"""
+    out = {}
+    for iid, it in sorted(proj.items.items()):
+        if it["status"] != DROPPED:
+            for c in it["cells"]:
+                out.setdefault(str(c).strip(), iid)
+    return out
+
+
+def claimed_cells(proj):
+    return set(claimed_by(proj))
+
+
 def grid_gaps(proj, grids):
     findings, summary = [], []
-    claimed = set()
-    for it in proj.items.values():
-        claimed |= {str(c).strip() for c in it["cells"]}
+    claimed = claimed_cells(proj)
     items = list(proj.items.values())
     for g in grids:
         linked, near, empty, linked_cells = [], [], [], []

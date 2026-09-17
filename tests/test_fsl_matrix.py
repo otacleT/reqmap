@@ -80,6 +80,12 @@ class MatrixTest(unittest.TestCase):
         self.assertEqual(summ["events"], 3)
         self.assertEqual(summ["stages"], 4)
 
+    def test_hole_question_states_the_current_behaviour(self):
+        F, _ = self._run()
+        q = [f["question"] for f in F if f["check"] == "fsl.state_event_hole"][0]
+        self.assertIn("いまの仕様では拒否", q)
+        self.assertIn("forbidden", q)
+
     def test_critical_event_is_asked_everywhere(self):
         F, _ = self._run(critical=["pay"])
         self.assertIn(("Draft", "pay"), holes(F))
@@ -91,6 +97,28 @@ class MatrixTest(unittest.TestCase):
     def test_forbidden_covers_a_cell(self):
         F, _ = self._run(forbidden=[{"id": "FB-1", "steps": [("submit", "0"), ("pay", "0")],
                                      "last": ("pay", "0")}])
+        self.assertNotIn(("Paid", "pay"), holes(F))
+
+    def test_summary_carries_the_full_matrix(self):
+        F, summ = self._run(events={"cancel_paid": "cancel"}, impossible={("draft", "cancel")},
+                            forbidden=[{"id": "FB-1", "steps": [("submit", "0"), ("pay", "0")],
+                                        "last": ("pay", "0")}])
+        cell = {(r["stage"], c["e"]): c["s"] for r in summ["matrix"]["rows"] for c in r["cells"]}
+        self.assertEqual(cell[("Draft", "submit")], "defined")
+        self.assertEqual(cell[("Pending", "submit")], "hole")
+        self.assertEqual(cell[("Paid", "pay")], "forbidden")
+        self.assertEqual(cell[("Draft", "cancel")], "impossible")
+        self.assertEqual(cell[("Cancelled", "pay")], "terminal")
+        self.assertEqual(cell[("Draft", "pay")], "hole")          # Draft は Pending の隣なので問う
+        self.assertEqual(cell[("Paid", "submit")], "suppressed")  # Paid は Draft の隣ではない
+        self.assertEqual(summ["matrix"]["events"], ["submit", "pay", "cancel"])
+
+    def test_claimed_cell_is_linked_in_the_matrix(self):
+        s = dict(fsl.read_source(""))
+        F, summ = fsl.matrix_findings(s, fsl.processes(KERNEL)[0], "fsl/order", "medium", [],
+                                      claimed={"fsl/order:Paid x pay"})
+        cell = {(r["stage"], c["e"]): c["s"] for r in summ["matrix"]["rows"] for c in r["cells"]}
+        self.assertEqual(cell[("Paid", "pay")], "linked")
         self.assertNotIn(("Paid", "pay"), holes(F))
 
     def test_unused_event_and_unreachable_stage(self):

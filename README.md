@@ -45,8 +45,11 @@ reqmap apply     Change Set の auto を適用する
 reqmap doctor    この vault をちゃんと読めているかを点検する（観点は出さない）
 reqmap gaps --new       前回見たときから新しく出た観点だけ
 reqmap gaps --snapshot  観点を「ここまでは見た」と記録する
+reqmap gaps --file <観点ID,...>  観点から open な論点ページを起票する（決定には触らない）
+reqmap show <id> 1論点の全部（前提・下流・日付・やりとり・仕様側の関連・観点）
 reqmap changes   前回見たときから書き換わった決定を出す
 reqmap changes --ack    決定を「ここまでは見た」と記録する
+reqmap ci        矛盾と「読めていない」があれば exit 1（CI で PR を止める用）
 reqmap recalc    影響度・依存の深さ・着手可否・逆算した期日を書く
 reqmap view      自己完結HTMLを出す（CDN参照なし）
 reqmap json      全データをJSONで（他ツール連携用）
@@ -70,6 +73,9 @@ reqmap json      全データをJSONで（他ツール連携用）
 | `lifecycle` | どのデータが、生成／保存／保持期間／論理削除／物理削除／削除伝播／エクスポートでどうなるか |
 | `authz` | 誰が（未ログイン／本人／他人／運用者／外部連携先）何にアクセスできるか |
 | `i18n` | 何を（文言／コンテンツ／通知／規約／入力データ）どう多言語・多地域対応するか |
+
+出てきた観点のうち追いかけるものは `reqmap gaps --file <観点ID>` でそのまま open な論点ページに
+なります。起票した観点は `cells:` で紐付き、穴から消えます。機械が書くのは未決の論点だけです。
 
 主フローの状態遷移は [FSL](https://github.com/ymm-oss/fsl)（fslc の `requirements` 方言）で書きます。
 reqmap は仕様の構造から状態×イベントの表を組み、**二重送信・二重決済・例外経路の欠落**を
@@ -209,7 +215,9 @@ forbidden FB-ORDER-002 "支払済み注文への再決済は拒否される" {
 | `fsl.state_event_hole` / `fsl.unused_event` | 状態×イベントの穴（これは reqmap が問う） |
 | `fsl.dead_end` / `fsl.dead_action` / `fsl.unreachable_stage` | 行き止まり／起きない遷移／到達しない状態 |
 | `fsl.stale_undecided` | 論点は決まったのに仕様が `@undecided` のまま＝**決定が仕様に未反映** |
+| `fsl.spec_behind_decision` | 紐付いた論点の決定日（`log:` の `decided`）より仕様が古い＝写し忘れ |
 | `fsl.undecided_unlinked` | 仕様に未決定があるのに論点が起票されていない |
+| `fsl.thin_spec` | 遷移だけで forbidden も acceptance も無い＝決定を写しても矛盾が出ない |
 | `fsl.spec_error` / `fsl.tool_missing` | 仕様が読めない／fslc が無い（観点が出ない原因） |
 
 未決定は `@undecided("Q-006 返金条件は決定待ち")` と、**論点IDを先頭に**書きます。
@@ -243,6 +251,17 @@ slug には副作用として良い性質があります。**slug が付けら�
 
 **`status` `decision` `severity` には機械が触りません。** 決定は人が下します。
 機械が決定欄に触れるようになった瞬間、この仕組みは信用できなくなります。
+
+## CI で止める
+
+```bash
+reqmap ci --root=<project>   # 矛盾と「読めていない」があれば exit 1。観点の多さでは止めない
+```
+
+止めるのは `fsl.forbidden_accepted` `fsl.acceptance_failed` `fsl.violated` `fsl.seam_broken`
+`fsl.spec_error` `fsl.legacy_format` `graph.conflict` `graph.cycle` `rule.duplicate_id`。
+仕様があるのに fslc が無いときも止めます（`--allow-missing-fslc` で許せます。黙って省略すると
+通ったように見えて、状態遷移は何も検査されていないので）。差し替えは `reqmap.yml` の `ci_gate:`。
 
 ## ファイル構成
 
@@ -285,6 +304,8 @@ scripts/reqmap-cli doctor --root=examples/takeout-app   # fslc と仕様が読�
 scripts/reqmap-cli status --root=examples/takeout-app
 scripts/reqmap-cli gaps   --root=examples/takeout-app
 scripts/reqmap-cli review --root=examples/takeout-app   # 7件中 blocked 1件（幻覚の引用）
+scripts/reqmap-cli ci     --root=examples/takeout-app   # exit 1（仕込んだ矛盾で止まる）
+scripts/reqmap-cli show Q-006 --root=examples/takeout-app
 scripts/reqmap-cli view   --root=examples/takeout-app
 ```
 

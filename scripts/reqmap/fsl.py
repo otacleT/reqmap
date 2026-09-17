@@ -23,6 +23,7 @@ fslc の注釈も読む（fslc は付けられることだけ検査し、JSON �
 
 fslc が無い環境では観点を1件出して省略する。jssm 形式の旧ファイルは読まない。
 """
+import datetime
 import glob
 import json
 import os
@@ -41,6 +42,7 @@ DECL = re.compile(r"^\s*(?:fair\s+)?(transition|action|invariant|trans|reachable
                   r"|until|unless|init|process)\b\s*([\w.]*)")
 SLOT = re.compile(r'"undecided:\s*([^"]*)"')
 FORBID = re.compile(r'forbidden\s+(\S+)\s+"[^"]*"\s*\{(.*?)\}', re.S)
+ACCEPT = re.compile(r'acceptance\s+(\S+)\s+"')
 STEP = re.compile(r"(\w+)\s*\(\s*([^,)]*)")
 
 
@@ -49,7 +51,7 @@ def read_source(text):
     """コメント指令・注釈・forbidden の最終ステップ。fslc の意味論には触れない。"""
     out = {"legacy": not DIALECT.search(text), "area": "", "depends_on": [],
            "extra_events": [], "critical": [], "impossible": set(), "events": {},
-           "undecided": [], "forbidden": []}
+           "undecided": [], "forbidden": [], "acceptance": []}
     dv = {}
     for k, v in DIRECTIVE.findall(text):
         dv.setdefault(k, []).append(v.split("//")[0].strip())
@@ -84,6 +86,7 @@ def read_source(text):
         steps = [(a, arg.strip()) for a, arg in STEP.findall(body.split("expect")[0])]
         if steps:
             out["forbidden"].append({"id": fid, "steps": steps[:-1], "last": steps[-1]})
+    out["acceptance"] = ACCEPT.findall(text)
     return out
 
 
@@ -184,13 +187,21 @@ def processes(kernel):
 
 
 # ── 状態×イベントの穴 ─────────────────────────────────────────
-def matrix_findings(src, proc, model_id, sev, related):
+STATUS_LABEL = {"defined": "遷移あり", "forbidden": "forbidden で拒否（検証済み）",
+                "impossible": "@impossible（起こり得ないと記録）", "linked": "起票済み（cells: で紐付け）",
+                "hole": "穴。候補の論点すら無い", "suppressed": "遠いマス（隣接ではない。件数だけ）",
+                "terminal": "終端（出る遷移が無い）", "unused": "どの状態にも遷移が無いイベント"}
+
+
+def matrix_findings(src, proc, model_id, sev, related, claimed=()):
     """状態×イベントの穴。**全マス総当たりにはしない。**
 
     総当たりは無意味セル（未送信の注文を受け渡す、など）で埋まり、一度で信用を失う。
     「そのイベントが定義済みの状態の**隣**」だけを問い、遠いセルは件数のみ記録する。
     ただし @critical のイベント（キャンセル・返金など揉めるもの）は全状態で問う。
-    隣接だけだと「調理中のキャンセル」のような一番揉めるマスが抑制側に落ちる。"""
+    隣接だけだと「調理中のキャンセル」のような一番揉めるマスが抑制側に落ちる。
+
+    全マスの状態は summary["matrix"] に載せる（HTML の表と、起票済みの把握に使う）。"""
     from .gaps import _f
     ev_of = src.get("events") or {}
     ev = lambda a: ev_of.get(a, a)
@@ -210,12 +221,13 @@ def matrix_findings(src, proc, model_id, sev, related):
     outgoing = {f for _, f, _ in trans}
     incoming = {t for _, _, t in trans}
     terminal = {s for s in stages if s not in outgoing}
-    impossible = set(src.get("impossible") or ())
+    imp_src = set(src.get("impossible") or ())
     # forbidden の最終ステップが当たるマスは「拒否する」と回答済み（しかも検証されている）。
     # 前提ステップを遷移表でなぞって、最終ステップ時点の状態を出す。
     by_action = {}
     for a, f, t in trans:
         by_action.setdefault(a, {})[f] = t
+    fb_cells = {}
     for fb in src.get("forbidden") or []:
         cur, ok = {}, True
         for a, arg in fb["steps"]:
@@ -226,38 +238,73 @@ def matrix_findings(src, proc, model_id, sev, related):
             cur[arg] = nxt
         if ok:
             a, arg = fb["last"]
-            impossible.add((str(cur.get(arg, proc["initial"])).lower(), ev(a).lower()))
+            fb_cells[(str(cur.get(arg, proc["initial"])).lower(), ev(a).lower())] = fb["id"]
     critical = set(src.get("critical") or ())
-    findings, suppressed, holes = [], 0, 0
+    claimed_by = claimed if isinstance(claimed, dict) else {k: "" for k in claimed}
+
+    # まず全マスの状態を決め、観点はそこから引く
+    rows, unused = [], []
     for e in events:
         S = {f for (f, x) in defined if x == e}
         if not S:
-            findings.append(_f("fsl.unused_event", sev, {"model": model_id, "event": e},
-                               "イベント『%s』はどの状態でも定義されていません。"
-                               "どの状態で発生し、どこへ遷移しますか？"
-                               "（不要なら @events から削除してください）" % e, related))
-            continue
-        nb = set().union(*[adj[s] for s in S]) - S
-        for s in stages:
-            if s in S or s in terminal or (s.lower(), e.lower()) in impossible:
+            unused.append(e)
+    counts = {}
+    for s in stages:
+        cells = []
+        for e in events:
+            S = {f for (f, x) in defined if x == e}
+            key, lk = "%s:%s x %s" % (model_id, s, e), (s.lower(), e.lower())
+            note = ""
+            if not S:
+                st = "linked" if "%s:* x %s" % (model_id, e) in claimed_by else "unused"
+            elif s in S:
+                st = "defined"
+            elif lk in fb_cells:          # 終端でも「拒否と決めた」記録のほうが情報量が多い
+                st, note = "forbidden", fb_cells[lk]
+            elif lk in imp_src:
+                st = "impossible"
+            elif key in claimed_by:
+                st, note = "linked", claimed_by[key]
+            elif s in terminal:
+                st = "terminal"
+            elif s not in set().union(*[adj[x] for x in S]) - S and e not in critical:
+                st = "suppressed"
+            else:
+                st = "hole"
+            counts[st] = counts.get(st, 0) + 1
+            cells.append({"e": e, "s": st, "n": note})
+        rows.append({"stage": s, "cells": cells})
+
+    findings = []
+    for e in unused:
+        if "%s:* x %s" % (model_id, e) in claimed_by:
+            continue   # 起票済み。論点として追っているので観点にはしない
+        findings.append(_f("fsl.unused_event", sev, {"model": model_id, "event": e},
+                           "イベント『%s』はどの状態でも定義されていません。"
+                           "どの状態で発生し、どこへ遷移しますか？"
+                           "（不要なら @events から削除してください）" % e, related))
+    for r in rows:
+        for c in r["cells"]:
+            if c["s"] != "hole":
                 continue
-            if s not in nb and e not in critical:
-                suppressed += 1
-                continue
-            holes += 1
             findings.append(_f("fsl.state_event_hole", sev,
-                               {"model": model_id, "state": s, "event": e},
-                               "状態『%s』のときにイベント『%s』が発生したらどうなりますか？"
-                               "（遷移を足す／forbidden で拒否を書く／"
-                               "@impossible で起こり得ないと記録する、のいずれか）" % (s, e),
+                               {"model": model_id, "state": r["stage"], "event": c["e"]},
+                               "状態『%s』のときにイベント『%s』が発生したらどうなりますか？ "
+                               "いまの仕様では拒否されます（遷移が無い）。それで良ければ forbidden に"
+                               "書いて検証に残す、違えば遷移を足す、起こり得ないなら @impossible に"
+                               "理由を書く、のいずれかです。" % (r["stage"], c["e"]),
                                related))
     for s in stages:
         if s != proc["initial"] and s not in incoming:
             findings.append(_f("fsl.unreachable_stage", "medium", {"model": model_id, "state": s},
                                "状態『%s』にはどこからも到達できません。入る遷移の定義漏れですか？" % s,
                                related, kind="unreachable"))
+    linked = sum(1 for r in rows for c in r["cells"] if c["s"] == "linked" and c["e"] not in unused)
+    linked += sum(1 for e in unused if "%s:* x %s" % (model_id, e) in claimed_by)
     summary = {"model": model_id, "stages": len(stages), "events": len(events),
-               "trans": len(trans), "suppressed": suppressed, "holes": holes}
+               "trans": len(trans), "suppressed": counts.get("suppressed", 0),
+               "holes": counts.get("hole", 0), "linked": linked,
+               "matrix": {"model": model_id, "stages": list(stages), "events": events, "rows": rows}}
     return findings, summary
 
 
@@ -292,6 +339,23 @@ def _related(proj, spec):
     return sorted(ids)
 
 
+def _spec_date(root, path):
+    """仕様の更新日。git の最終コミット日と mtime の新しいほう（未コミットの編集も拾う）。"""
+    dates = []
+    try:
+        dates.append(datetime.date.fromtimestamp(os.path.getmtime(path)))
+    except OSError:
+        pass
+    try:
+        r = subprocess.run(["git", "log", "-1", "--format=%cs", "--", os.path.relpath(path, root)],
+                           capture_output=True, text=True, cwd=root, timeout=10)
+        if r.returncode == 0 and model.as_date(r.stdout.strip()):
+            dates.append(model.as_date(r.stdout.strip()))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return max(dates) if dates else None
+
+
 def _state_str(state):
     parts = []
     for k, v in sorted((state or {}).items()):
@@ -321,11 +385,14 @@ def gaps(proj):
                               "undecided": len(sp["src"]["undecided"])})
         return findings, summaries
     depth = int(proj.cfg.get("fsl_depth") or 8)
+    from .gaps import claimed_by
+    claimed = claimed_by(proj)
     for sp in specs:
         src, related = sp["src"], _related(proj, sp)
         sev = "high" if proj.area_risk(src["area"]) == "high" else "medium"
         summ = {"model": sp["id"], "file": sp["file"], "stages": 0, "events": 0, "trans": 0,
-                "suppressed": 0, "holes": 0, "verify": "", "undecided": len(src["undecided"])}
+                "suppressed": 0, "holes": 0, "linked": 0, "verify": "",
+                "undecided": len(src["undecided"])}
         summaries.append(summ)
         if src["legacy"]:
             findings.append(_f("fsl.legacy_format", "medium", {"model": sp["id"]},
@@ -371,14 +438,23 @@ def gaps(proj):
         procs = processes(ker) if ker.get("actions") is not None else []
         from_of = {}
         for proc in procs:
-            F, ms = matrix_findings(src, proc, sp["id"], sev, related)
+            F, ms = matrix_findings(src, proc, sp["id"], sev, related, claimed)
             findings += F
-            for key in ("stages", "events", "trans", "suppressed", "holes"):
+            for key in ("stages", "events", "trans", "suppressed", "holes", "linked"):
                 summ[key] += ms[key]
+            summ.setdefault("matrices", []).append(ms["matrix"])
             for a, f, _ in proc["trans"]:
                 from_of.setdefault(a, set()).add(f)
         unreachable = {f["target"]["state"] for f in findings
                        if f["check"] == "fsl.unreachable_stage" and f["target"]["model"] == sp["id"]}
+        if summ["trans"] and not src["forbidden"] and not src["acceptance"]:
+            # 検証条件が無い仕様は、fslc が通っても決定を写す先になっていない。
+            # 後から矛盾する決定が入っても何も出ない（＝ループが閉じていない）。
+            findings.append(_f("fsl.thin_spec", "medium", {"model": sp["id"]},
+                               "%s は遷移だけで、forbidden も acceptance もありません。"
+                               "このままだと決定を写しても矛盾は検出されません。"
+                               "拒否すると決めたマスは forbidden に、正常系は acceptance に書いてください。"
+                               % sp["file"], related, kind="thin"))
 
         # verify: 不変条件・到達性・行き止まり・上位層との整合
         ver = run_fslc(["verify", sp["path"], "--depth", str(depth)], proj.root)
@@ -442,12 +518,31 @@ def gaps(proj):
                                % (sp["file"], imp.get("abs"), imp["result"]),
                                related, kind="contradiction"))
 
+        # 決定が仕様より新しい: 紐付いた論点が decided で、log の決定日が仕様の更新日より後。
+        # @undecided が無い箇所の写し忘れはこれでしか拾えない。型付き log があるから数えられる。
+        spec_date = _spec_date(proj.root, sp["path"])
+        for qid in related:
+            it = proj.items.get(qid)
+            if not it or it["status"] != model.DECIDED:
+                continue
+            dd = max((e["date"] for e in it["log"] if e["kind"] == "decided" and e["date"]),
+                     default=None)
+            if dd and spec_date and spec_date < dd:
+                findings.append(_f("fsl.spec_behind_decision", "high",
+                                   {"model": sp["id"], "item": qid, "decided": dd.isoformat(),
+                                    "spec": spec_date.isoformat()},
+                                   "『%s』は %s に決定しましたが、仕様 %s はそれ以前（%s）から変わっていません。"
+                                   "決定を仕様に写してください（写し済みなら仕様を保存・コミットしてください）。"
+                                   % (it["title"], dd.isoformat(), sp["file"], spec_date.isoformat()),
+                                   [qid], kind="stale_undecided"))
+
         # undecided: 論点が open ならそれが正常。決まっているのに残っていれば未反映。
         for u in src["undecided"]:
             qid = _ref(proj, u["reason"])
             if qid is None:
                 findings.append(_f("fsl.undecided_unlinked", "medium",
-                                   {"model": sp["id"], "decl": u["decl"], "line": u["line"]},
+                                   {"model": sp["id"], "decl": u["decl"], "line": u["line"],
+                                    "reason": u["reason"]},
                                    "%s の『%s』は未決定（%s）ですが、対応する論点が起票されていません。"
                                    "論点を起こし、@undecided の先頭にその ID を書いてください。"
                                    % (sp["file"], u["decl"], u["reason"][:40]),
